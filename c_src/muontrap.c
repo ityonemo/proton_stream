@@ -57,6 +57,7 @@ static struct option long_options[] = {
     {"capture-output", no_argument, 0, 'o'},
     {"capture-stderr", no_argument, 0, 'e'},
     {"capture-stderr-only", no_argument, 0, 'r'},
+    {"framed", no_argument, 0, 'f'},
     {0,          0,                 0, 0 }
 };
 
@@ -93,6 +94,20 @@ static int stdio_bytes_avail = DEFAULT_STDIO_WINDOW;
 static int capture_output = 0; // Don't capture output by default
 static int capture_stderr = 0; // If capturing output, don't capture stderr by default
 static int capture_stderr_only = 0; // Capture stderr only, ignore stdout
+static int framed_mode = 0; // Use framed protocol for stdin/stdout/stderr
+
+// Frame protocol tags (C -> Elixir)
+#define FRAME_TAG_STDOUT 0x01
+#define FRAME_TAG_STDERR 0x02
+#define FRAME_TAG_EXIT   0x03
+
+// Frame protocol commands (Elixir -> C)
+#define FRAME_CMD_STDIN  0x01
+#define FRAME_CMD_CLOSE  0x02
+#define FRAME_CMD_ACK    0x03
+
+// Pipe for writing to child's stdin in framed mode
+static int stdin_pipe[2] = { -1, -1};
 
 #define FOREACH_CONTROLLER for (struct controller_info *controller = controllers; controller != NULL; controller = controller->next)
 
@@ -113,6 +128,7 @@ static void usage()
     printf("--capture-output\n");
     printf("--capture-stderr\n");
     printf("--capture-stderr-only\n");
+    printf("--framed - enable framed binary protocol for streaming I/O\n");
     printf("--uid <uid/user> drop privilege to this uid or user\n");
     printf("--gid <gid/group> drop privilege to this gid or group\n");
     printf("-- the program to run and its arguments come after this\n");
@@ -213,6 +229,14 @@ static int fork_exec(const char *path, char *const *argv)
             close(dev_null_fd);
         }
 
+        // In framed mode, connect stdin_pipe to child's stdin
+        if (framed_mode && stdin_pipe[0] >= 0) {
+            if (dup2(stdin_pipe[0], STDIN_FILENO) < 0)
+                FATAL("dup2 STDIN_FILENO");
+            close(stdin_pipe[0]);
+            close(stdin_pipe[1]);
+        }
+
         // Drop/change privilege if requested
         // See https://wiki.sei.cmu.edu/confluence/display/c/POS36-C.+Observe+correct+revocation+order+while+relinquishing+privileges
         if (run_as_gid > 0 && setgid(run_as_gid) < 0)
@@ -226,6 +250,11 @@ static int fork_exec(const char *path, char *const *argv)
         // Not supposed to reach here.
         exit(EXIT_FAILURE);
     } else {
+        // Parent: close the read end of stdin_pipe since we only write to it
+        if (framed_mode && stdin_pipe[0] >= 0) {
+            close(stdin_pipe[0]);
+            stdin_pipe[0] = -1;
+        }
 
         return pid;
     }
@@ -545,6 +574,83 @@ static void add_controller_setting(struct controller_info *controller, const cha
     controller->vars = new_var;
 }
 
+// Write a framed message to stdout
+// Frame format: TAG (1 byte) | LEN_HIGH (1 byte) | LEN_LOW (1 byte) | PAYLOAD (0-65535 bytes)
+static int write_frame(uint8_t tag, const uint8_t *data, size_t len)
+{
+    if (len > 65535) {
+        WARNX("Frame too large: %zu bytes", len);
+        return -1;
+    }
+
+    uint8_t header[3];
+    header[0] = tag;
+    header[1] = (len >> 8) & 0xFF;
+    header[2] = len & 0xFF;
+
+    // Write header
+    for (size_t i = 0; i < 3;) {
+        ssize_t written = write(STDOUT_FILENO, &header[i], 3 - i);
+        if (written <= 0) {
+            if (errno == EINTR)
+                continue;
+            WARN("write frame header");
+            return -1;
+        }
+        i += written;
+    }
+
+    // Write payload
+    for (size_t i = 0; i < len;) {
+        ssize_t written = write(STDOUT_FILENO, &data[i], len - i);
+        if (written <= 0) {
+            if (errno == EINTR)
+                continue;
+            WARN("write frame payload");
+            return -1;
+        }
+        i += written;
+    }
+
+    return 0;
+}
+
+// Write exit status frame (4-byte big-endian signed int)
+static int write_exit_frame(int exit_status)
+{
+    uint8_t payload[4];
+    payload[0] = (exit_status >> 24) & 0xFF;
+    payload[1] = (exit_status >> 16) & 0xFF;
+    payload[2] = (exit_status >> 8) & 0xFF;
+    payload[3] = exit_status & 0xFF;
+    return write_frame(FRAME_TAG_EXIT, payload, 4);
+}
+
+// Process stdio in framed mode - wraps output in frames with tag
+static int process_stdio_framed(int from_fd, uint8_t tag)
+{
+    if (stdio_bytes_avail <= 0)
+        return 0;
+
+    size_t max_to_read = stdio_bytes_avail > 4096 ? 4096 : stdio_bytes_avail;
+    // Also limit to max frame size
+    if (max_to_read > 65535)
+        max_to_read = 65535;
+
+    uint8_t buff[max_to_read];
+    ssize_t got = read(from_fd, buff, max_to_read);
+
+    if (got > 0) {
+        if (write_frame(tag, buff, got) < 0)
+            return -1;
+        stdio_bytes_avail -= got;
+    } else if (got < 0 && errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR) {
+        WARN("read from child");
+        return -1;
+    }
+    return 0;
+}
+
 #if defined(__linux__)
 static int process_stdio(int from_fd)
 {
@@ -593,6 +699,102 @@ static int process_stdio(int from_fd)
 }
 #endif
 
+// Buffer for framed command parsing
+static uint8_t framed_cmd_buffer[65538]; // Max frame size (65535) + header (3)
+static size_t framed_cmd_buffer_len = 0;
+
+// Process framed commands from stdin
+// Returns: 0 = continue, 1 = close requested, -1 = error
+static int process_framed_stdin()
+{
+    // Read more data into the buffer
+    size_t space_left = sizeof(framed_cmd_buffer) - framed_cmd_buffer_len;
+    if (space_left == 0) {
+        WARNX("Framed command buffer full");
+        return -1;
+    }
+
+    ssize_t amt = read(STDIN_FILENO, framed_cmd_buffer + framed_cmd_buffer_len, space_left);
+    if (amt <= 0) {
+        if (amt == 0 || (errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR)) {
+            INFO("stdin closed or error in framed mode");
+            return -1;
+        }
+        return 0;
+    }
+    framed_cmd_buffer_len += amt;
+
+    // Process complete frames
+    while (framed_cmd_buffer_len >= 3) {
+        uint8_t cmd = framed_cmd_buffer[0];
+        size_t payload_len = (framed_cmd_buffer[1] << 8) | framed_cmd_buffer[2];
+
+        // Check if we have the complete frame
+        if (framed_cmd_buffer_len < 3 + payload_len)
+            break;
+
+        // Process the command
+        switch (cmd) {
+        case FRAME_CMD_STDIN:
+            // Write payload to child's stdin
+            if (stdin_pipe[1] >= 0 && payload_len > 0) {
+                const uint8_t *data = framed_cmd_buffer + 3;
+                for (size_t i = 0; i < payload_len;) {
+                    ssize_t written = write(stdin_pipe[1], &data[i], payload_len - i);
+                    if (written <= 0) {
+                        if (errno == EINTR)
+                            continue;
+                        if (errno == EPIPE) {
+                            // Child closed stdin, that's OK
+                            INFO("child closed stdin");
+                            break;
+                        }
+                        WARN("write to child stdin");
+                        return -1;
+                    }
+                    i += written;
+                }
+            }
+            break;
+
+        case FRAME_CMD_CLOSE:
+            // Close child's stdin
+            if (stdin_pipe[1] >= 0) {
+                close(stdin_pipe[1]);
+                stdin_pipe[1] = -1;
+                INFO("closed child stdin");
+            }
+            // Signal that close was requested
+            return 1;
+
+        case FRAME_CMD_ACK:
+            // Process acknowledgments (same format as before: each byte is value+1)
+            {
+                int total_acks = 0;
+                for (size_t i = 0; i < payload_len; i++)
+                    total_acks += framed_cmd_buffer[3 + i] + 1;
+                stdio_bytes_avail += total_acks;
+                if (stdio_bytes_avail > stdio_bytes_max) {
+                    WARNX("Too many acks in framed mode");
+                    return -1;
+                }
+            }
+            break;
+
+        default:
+            WARNX("Unknown framed command: %d", cmd);
+            return -1;
+        }
+
+        // Shift buffer to remove processed frame
+        size_t frame_size = 3 + payload_len;
+        memmove(framed_cmd_buffer, framed_cmd_buffer + frame_size, framed_cmd_buffer_len - frame_size);
+        framed_cmd_buffer_len -= frame_size;
+    }
+
+    return 0;
+}
+
 static int child_wait_loop(pid_t child_pid, int *still_running)
 {
     struct pollfd fds[4];
@@ -637,34 +839,54 @@ static int child_wait_loop(pid_t child_pid, int *still_running)
         }
 
         if (fds[0].revents & POLLIN) {
-            uint8_t acknowledgments[32];
-            ssize_t amt = read(STDIN_FILENO, acknowledgments, sizeof(acknowledgments));
-            if (amt >= 0) {
-                // More than one acknowledgment may have come in, so process them all.
-                // NOTE: each ack is 1+its_value
-                int total_acks = amt;
-                for (ssize_t i = 0; i < amt; i++)
-                    total_acks += acknowledgments[i];
+            if (framed_mode) {
+                int result = process_framed_stdin();
+                if (result < 0)
+                    return EXIT_FAILURE;
+                // result == 1 means close was requested, but we continue running
+            } else {
+                uint8_t acknowledgments[32];
+                ssize_t amt = read(STDIN_FILENO, acknowledgments, sizeof(acknowledgments));
+                if (amt >= 0) {
+                    // More than one acknowledgment may have come in, so process them all.
+                    // NOTE: each ack is 1+its_value
+                    int total_acks = amt;
+                    for (ssize_t i = 0; i < amt; i++)
+                        total_acks += acknowledgments[i];
 
-                stdio_bytes_avail += total_acks;
-                if (stdio_bytes_avail > stdio_bytes_max) {
-                    WARNX("Too many acks %d/%d, got %d", (int) stdio_bytes_avail, (int) stdio_bytes_max, total_acks);
+                    stdio_bytes_avail += total_acks;
+                    if (stdio_bytes_avail > stdio_bytes_max) {
+                        WARNX("Too many acks %d/%d, got %d", (int) stdio_bytes_avail, (int) stdio_bytes_max, total_acks);
+                        return EXIT_FAILURE;
+                    }
+                } else if (errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR) {
+                    INFO("read STDIN_FILENO error: %s", strerror(errno));
                     return EXIT_FAILURE;
                 }
-            } else if (errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR) {
-                INFO("read STDIN_FILENO error: %s", strerror(errno));
-                return EXIT_FAILURE;
             }
         }
 
         if (poll_num > 2 && fds[2].revents) {
-            if (process_stdio(fds[2].fd) < 0)
-                return EXIT_FAILURE;
+            if (framed_mode) {
+                // In framed mode, determine if fds[2] is stdout or stderr
+                uint8_t tag = (fds[2].fd == stderr_pipe[0]) ? FRAME_TAG_STDERR : FRAME_TAG_STDOUT;
+                if (process_stdio_framed(fds[2].fd, tag) < 0)
+                    return EXIT_FAILURE;
+            } else {
+                if (process_stdio(fds[2].fd) < 0)
+                    return EXIT_FAILURE;
+            }
         }
 
         if (poll_num > 3 && fds[3].revents) {
-            if (process_stdio(fds[3].fd) < 0)
-                return EXIT_FAILURE;
+            if (framed_mode) {
+                // fds[3] is always stderr when we have 4 fds
+                if (process_stdio_framed(fds[3].fd, FRAME_TAG_STDERR) < 0)
+                    return EXIT_FAILURE;
+            } else {
+                if (process_stdio(fds[3].fd) < 0)
+                    return EXIT_FAILURE;
+            }
         }
 
         if (fds[1].revents) {
@@ -696,6 +918,12 @@ static int child_wait_loop(pid_t child_pid, int *still_running)
                         INFO("child terminated with unexpected status: %d", status);
                         exit_status = EXIT_FAILURE;
                     }
+
+                    // In framed mode, send exit status frame before returning
+                    if (framed_mode) {
+                        write_exit_frame(exit_status);
+                    }
+
                     return exit_status;
                 } else {
                     INFO("something else caused sigchild: pid=%d, status=%d. our child=%d", dying_pid, status, child_pid);
@@ -789,6 +1017,13 @@ int main(int argc, char *argv[])
             capture_stderr_only = 1;
             break;
 
+        case 'f': // --framed
+            framed_mode = 1;
+            // Framed mode implies capturing output and stderr
+            capture_output = 1;
+            capture_stderr = 1;
+            break;
+
         case 's':
         {
             if (!current_controller)
@@ -870,6 +1105,15 @@ int main(int argc, char *argv[])
                 fcntl(stderr_pipe[1], F_SETFD, FD_CLOEXEC) < 0)
                 WARN("fcntl(FD_CLOEXEC)");
         }
+    }
+
+    // In framed mode, create a pipe for writing to child's stdin
+    if (framed_mode) {
+        if (pipe(stdin_pipe) < 0)
+            FATAL("pipe");
+        if (fcntl(stdin_pipe[0], F_SETFD, FD_CLOEXEC) < 0 ||
+            fcntl(stdin_pipe[1], F_SETFD, FD_CLOEXEC) < 0)
+            WARN("fcntl(FD_CLOEXEC)");
     }
 
     enable_signal_handlers();

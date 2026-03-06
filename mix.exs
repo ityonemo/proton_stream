@@ -1,15 +1,15 @@
-defmodule MuonTrap.MixProject do
+defmodule ProtonStream.MixProject do
   use Mix.Project
 
   @version "1.7.0"
-  @source_url "https://github.com/fhunleth/muontrap"
+  @source_url "https://github.com/ityonemo/proton_stream"
 
   def project do
     [
-      app: :muontrap,
+      app: :proton_stream,
       version: @version,
       elixir: "~> 1.11",
-      description: "Keep your ports contained",
+      description: "Streaming process I/O with Port-like API",
       source_url: @source_url,
       elixirc_paths: elixirc_paths(Mix.env()),
       docs: docs(),
@@ -72,7 +72,7 @@ defmodule MuonTrap.MixProject do
       links: %{
         "Changelog" => "#{@source_url}/blob/main/CHANGELOG.md",
         "GitHub" => @source_url,
-        "REUSE Compliance" => "https://api.reuse.software/info/github.com/fhunleth/muontrap"
+        "REUSE Compliance" => "https://api.reuse.software/info/github.com/ityonemo/proton_stream"
       }
     ]
   end

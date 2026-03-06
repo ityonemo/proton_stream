@@ -1,9 +1,9 @@
-# MuonTrap
+# ProtonStream
 
-[![Hex version](https://img.shields.io/hexpm/v/muontrap.svg "Hex version")](https://hex.pm/packages/muontrap)
-[![API docs](https://img.shields.io/hexpm/v/muontrap.svg?label=hexdocs "API docs")](https://hexdocs.pm/muontrap/MuonTrap.html)
-[![CircleCI](https://dl.circleci.com/status-badge/img/gh/fhunleth/muontrap/tree/main.svg?style=svg)](https://dl.circleci.com/status-badge/redirect/gh/fhunleth/muontrap/tree/main)
-[![REUSE status](https://api.reuse.software/badge/github.com/fhunleth/muontrap)](https://api.reuse.software/info/github.com/fhunleth/muontrap)
+[![Hex version](https://img.shields.io/hexpm/v/proton_stream.svg "Hex version")](https://hex.pm/packages/proton_stream)
+[![API docs](https://img.shields.io/hexpm/v/proton_stream.svg?label=hexdocs "API docs")](https://hexdocs.pm/proton_stream/ProtonStream.html)
+[![CircleCI](https://dl.circleci.com/status-badge/img/gh/ityonemo/proton_stream/tree/main.svg?style=svg)](https://dl.circleci.com/status-badge/redirect/gh/ityonemo/proton_stream/tree/main)
+[![REUSE status](https://api.reuse.software/badge/github.com/ityonemo/proton_stream)](https://api.reuse.software/info/github.com/ityonemo/proton_stream)
 
 Keep programs, daemons, and applications launched from Erlang and Elixir
 contained and well-behaved. This lightweight library kills OS processes if the
@@ -20,12 +20,12 @@ Some other features:
 
 ## TL;DR
 
-Add `muontrap` to your project's `mix.exs` dependency list:
+Add `proton_stream` to your project's `mix.exs` dependency list:
 
 ```elixir
 def deps do
   [
-    {:muontrap, "~> 1.0"}
+    {:proton_stream, "~> 1.0"}
   ]
 end
 ```
@@ -34,7 +34,7 @@ Run a command similar to
 [`System.cmd/3`](https://hexdocs.pm/elixir/System.html#cmd/3):
 
 ```elixir
-iex>  MuonTrap.cmd("echo", ["hello"])
+iex>  ProtonStream.cmd("echo", ["hello"])
 {"hello\n", 0}
 ```
 
@@ -43,7 +43,7 @@ Attach a long running process to a supervision tree using a
 like the following:
 
 ```elixir
-{MuonTrap.Daemon, ["long_running_command", ["arg1", "arg2"], options]}
+{ProtonStream.Daemon, ["long_running_command", ["arg1", "arg2"], options]}
 ```
 
 Running on Linux and can use cgroups? Then create a new cgroup:
@@ -53,7 +53,7 @@ sudo cgcreate -a $(whoami) -g memory:mycgroup
 ```
 
 ```elixir
-{MuonTrap.Daemon,
+{ProtonStream.Daemon,
  [
    "long_running_command",
    ["arg1", "arg2"],
@@ -61,10 +61,10 @@ sudo cgcreate -a $(whoami) -g memory:mycgroup
  ]}
 ```
 
-`MuonTrap` will create a cgroup under "mycgroup" to run the
+`ProtonStream` will create a cgroup under "mycgroup" to run the
 `"long_running_command"`. If the command fails, it will be restarted. If it
 should no longer be running (like if something else crashed in Elixir and
-supervision needs to clean up) then MuonTrap will kill `"long_running_command"`
+supervision needs to clean up) then ProtonStream will kill `"long_running_command"`
 and all of its children.
 
 Want to know more about the motivations for this library? Read on in the
@@ -74,21 +74,21 @@ Want to know more about the motivations for this library? Read on in the
 
 ### How do I watch stdout?
 
-If you're using `MuonTrap.cmd/3`, you don't get the called program's output
+If you're using `ProtonStream.cmd/3`, you don't get the called program's output
 until after it exits. Just like `System.cmd/3`, the `:into` option can be used
 to get the output as it's printed. Here's an example.
 
 ```elixir
-MuonTrap.cmd("my_program", [], stderr_to_stdout: true, into: IO.binstream(:stdio, :line))
+ProtonStream.cmd("my_program", [], stderr_to_stdout: true, into: IO.binstream(:stdio, :line))
 ```
 
-If you're using `MuonTrap.Daemon`, then the best way is to send output to the
-logger. There are quite a few options, so see the `MuonTrap.Daemon` docs on what
+If you're using `ProtonStream.Daemon`, then the best way is to send output to the
+logger. There are quite a few options, so see the `ProtonStream.Daemon` docs on what
 makes sense for you.
 
-### How do I stop a MuonTrap.Daemon?
+### How do I stop a ProtonStream.Daemon?
 
-Treat the `MuonTrap.Daemon` process just like any other Elixir process. If you
+Treat the `ProtonStream.Daemon` process just like any other Elixir process. If you
 put it in a supervision tree, call `Supervisor.terminate_child/2`. If you have
 it's pid, call `Process.exit/2`.
 
@@ -143,7 +143,7 @@ it should exit.
 Imagine now that the process was supervised and it restarts. If this happens a
 regularly, you could be running dozens of `ping` commands.
 
-This is just one of the problems that `muontrap` fixes.
+This is just one of the problems that `proton_stream` fixes.
 
 ## Applicability
 
@@ -154,11 +154,11 @@ to add, but you'll probably be happier with other solutions like
 
 ## Running commands
 
-The simplest way to use `muontrap` is as a replacement to `System.cmd/3`. Here's
+The simplest way to use `proton_stream` is as a replacement to `System.cmd/3`. Here's
 an example using `ping`:
 
 ```elixir
-iex> pid = spawn(fn -> MuonTrap.cmd("ping", ["-i", "5", "localhost"], into: IO.stream(:stdio, :line)) end)
+iex> pid = spawn(fn -> ProtonStream.cmd("ping", ["-i", "5", "localhost"], into: IO.stream(:stdio, :line)) end)
 #PID<0.30860.0>
 PING localhost (127.0.0.1): 56 data bytes
 64 bytes from 127.0.0.1: icmp_seq=0 ttl=64 time=0.027 ms
@@ -183,7 +183,7 @@ process contained can be useful just to make sure that everything is cleaned
 up on exit including any subprocesses.
 
 To set this up, first create a cgroup with appropriate permissions. Any path
-will do; `muontrap` just needs to be able to create a subdirectory underneath it
+will do; `proton_stream` just needs to be able to create a subdirectory underneath it
 for its use. For example:
 
 ```bash
@@ -191,31 +191,31 @@ sudo cgcreate -a $(whoami) -g memory,cpu:mycgroup
 ```
 
 Be sure to create the group for all of the cgroup controllers that you wish to
-use with `muontrap`. The above example creates it for the `memory` and `cpu`
+use with `proton_stream`. The above example creates it for the `memory` and `cpu`
 controllers.
 
-In Elixir, call `MuonTrap.cmd/3` with the
+In Elixir, call `ProtonStream.cmd/3` with the
 cgroup options now. In this case, we'll use the `cpu` controller, but this
 example would work fine with any of the controllers.
 
 ```elixir
-iex>  MuonTrap.cmd("spawning_program", [], cgroup_controllers: ["cpu"], cgroup_base: "mycgroup")
+iex>  ProtonStream.cmd("spawning_program", [], cgroup_controllers: ["cpu"], cgroup_base: "mycgroup")
 {"hello\n", 0}
 ```
 
-In this example, `muontrap` runs `spawning_program` in a sub-cgroup under the
+In this example, `proton_stream` runs `spawning_program` in a sub-cgroup under the
 `cpu/mycgroup` group. The cgroup parameters may be modified outside of
-`muontrap` using `cgset` or my accessing the cgroup mountpoint manually.
+`proton_stream` using `cgset` or my accessing the cgroup mountpoint manually.
 
 On any error or if the Erlang VM closes the port or if `spawning_program` exits,
-`muontrap` will kill all OS processes in cgroup. No need to worry about
+`proton_stream` will kill all OS processes in cgroup. No need to worry about
 random processes accumulating on your system.
 
 Note that if you use `cgroup_base`, a temporary cgroup is created for running
-the command. If you want `muontrap` to use a particular cgroup and not create a
+the command. If you want `proton_stream` to use a particular cgroup and not create a
 subgroup for the command, use the `:cgroup_path` option. Note that if you
 explicitly specify a cgroup, be careful not to use it for anything else.
-`MuonTrap` assumes that it owns the cgroup and when it needs to kill processes,
+`ProtonStream` assumes that it owns the cgroup and when it needs to kill processes,
 it kills all of them in the cgroup.
 
 ### Limit the memory used by a process
@@ -225,7 +225,7 @@ surface. If you'd like to limit an OS process and all of its child processes to
 a maximum amount of memory, you can do that with the `memory` controller:
 
 ```elixir
-iex>  MuonTrap.cmd("memory_hog", [], cgroup_controllers: ["memory"], cgroup_base: "mycgroup", cgroup_sets: [{"memory", "memory.limit_in_bytes", "268435456"}])
+iex>  ProtonStream.cmd("memory_hog", [], cgroup_controllers: ["memory"], cgroup_base: "mycgroup", cgroup_sets: [{"memory", "memory.limit_in_bytes", "268435456"}])
 ```
 
 That line restricts the total memory used by `memory_hog` to 256 MB.
@@ -239,21 +239,21 @@ of those microseconds can be used. Here's an example call that prevents a
 program from using more than 50% of the CPU:
 
 ```elixir
-iex>  MuonTrap.cmd("cpu_hog", [], cgroup_controllers: ["cpu"], cgroup_base: "mycgroup", cgroup_sets: [{"cpu", "cpu.cfs_period_us", "100000"}, {"cpu", "cpu.cfs_quota_us", 50000}])
+iex>  ProtonStream.cmd("cpu_hog", [], cgroup_controllers: ["cpu"], cgroup_base: "mycgroup", cgroup_sets: [{"cpu", "cpu.cfs_period_us", "100000"}, {"cpu", "cpu.cfs_quota_us", 50000}])
 ```
 
 ## Supervision
 
 For many long running programs, you may want to restart them if they crash.
-Luckily Erlang already has mechanisms to do this. `MuonTrap` provides a
-`GenServer` called `MuonTrap.Daemon` that you can hook into one of your
+Luckily Erlang already has mechanisms to do this. `ProtonStream` provides a
+`GenServer` called `ProtonStream.Daemon` that you can hook into one of your
 supervision trees.  For example, you could specify it like this in your
 application's supervisor:
 
 ```elixir
   def start(_type, _args) do
     children = [
-      {MuonTrap.Daemon, ["command", ["arg1", "arg2"], options]}
+      {ProtonStream.Daemon, ["command", ["arg1", "arg2"], options]}
     ]
 
     opts = [strategy: :one_for_one, name: MyApp.Supervisor]
@@ -272,13 +272,13 @@ Supervisors provide three restart strategies, `:permanent`, `:temporary`, and
   restarted.
 * `:temporary` - Don't restart
 
-If you're running more than one `MuonTrap.Daemon` under the same `Supervisor`,
+If you're running more than one `ProtonStream.Daemon` under the same `Supervisor`,
 then you'll need to give each one a unique `:id`. Here's an example `child_spec`
 for setting the `:id` and the `:restart` parameters:
 
 ```elixir
     Supervisor.child_spec(
-        {MuonTrap.Daemon, ["command", ["arg1"], options]},
+        {ProtonStream.Daemon, ["command", ["arg1"], options]},
          id: :my_daemon,
          restart: :transient
       )
@@ -287,18 +287,18 @@ for setting the `:id` and the `:restart` parameters:
 ## stdio flow control
 
 The Erlang port feature does not implement flow control from messages coming
-from the port process. Since `MuonTrap` captures stdio from the program being
+from the port process. Since `ProtonStream` captures stdio from the program being
 run, it's possible that the program sends output so fast that it grows the
 Elixir process's mailbox big enough to cause an out-of-memory error.
 
-`MuonTrap` protects against this by implementing a flow control mechanism. When
+`ProtonStream` protects against this by implementing a flow control mechanism. When
 triggered, the running program's stdout and stderr file handles won't be read
 and hence it will eventually be blocked from writing to those handles.
 
 The `:stdio_window` option specifies the maximum number of unacknowledged bytes
 allowed. The default is 10 KB.
 
-## muontrap development
+## proton_stream development
 
 In order to run the tests, some additional tools need to be installed.
 Specifically the `cgcreate` and `cgget` binaries need to be installed (and
@@ -308,7 +308,7 @@ arch linux you need to install the `libcgroup` aur package).
 Then run:
 
 ```sh
-sudo cgcreate -a $(whoami) -g memory,cpu:muontrap_test
+sudo cgcreate -a $(whoami) -g memory,cpu:proton_stream_test
 ```
 
 ## License

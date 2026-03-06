@@ -5,7 +5,7 @@
 
 ExUnit.start()
 
-defmodule MuonTrapTestHelpers do
+defmodule ProtonStreamTestHelpers do
   @spec check_cgroup_support() :: :ok | no_return()
   def check_cgroup_support() do
     if !System.find_executable("cgget") do
@@ -14,10 +14,10 @@ defmodule MuonTrapTestHelpers do
       System.halt(1)
     end
 
-    if !(MuonTrapTest.Case.cpu_cgroup_exists("muontrap_test") and
-           MuonTrapTest.Case.memory_cgroup_exists("muontrap_test")) do
-      IO.puts(:stderr, "\nPlease create the muontrap_test cgroup")
-      IO.puts(:stderr, "sudo cgcreate -a $(whoami) -g memory,cpu:muontrap_test")
+    if !(ProtonStreamTest.Case.cpu_cgroup_exists("proton_stream_test") and
+           ProtonStreamTest.Case.memory_cgroup_exists("proton_stream_test")) do
+      IO.puts(:stderr, "\nPlease create the proton_stream_test cgroup")
+      IO.puts(:stderr, "sudo cgcreate -a $(whoami) -g memory,cpu:proton_stream_test")
       IO.puts(:stderr, "\nTo skip cgroup tests, run `mix test --exclude cgroup`")
       System.halt(1)
     end
@@ -36,10 +36,10 @@ defmodule MuonTrapTestHelpers do
   defp truthy?(_), do: true
 end
 
-if !MuonTrapTestHelpers.cgroup_excluded?() do
+if !ProtonStreamTestHelpers.cgroup_excluded?() do
   case :os.type() do
     {:unix, :linux} ->
-      MuonTrapTestHelpers.check_cgroup_support()
+      ProtonStreamTestHelpers.check_cgroup_support()
 
     _ ->
       IO.puts(:stderr, "Not on Linux so skipping tests that use cgroups...")

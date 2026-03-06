@@ -2,22 +2,25 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-defmodule MuonTrapTest.Case do
+defmodule ProtonStreamTest.Case do
   @moduledoc false
   use ExUnit.CaseTemplate
 
   using do
     quote do
       import unquote(__MODULE__)
-      alias MuonTrapTest.Case
+      alias ProtonStreamTest.Case
     end
   end
 
   @timeout_before_close_check 20
 
+  # Use compile-time path to avoid issues with tests that change cwd
+  @project_root Path.expand("../..", __DIR__)
+
   @spec test_path(Path.t()) :: Path.t()
   def test_path(cmd) do
-    Path.join([File.cwd!(), "test", cmd])
+    Path.join([@project_root, "test", cmd])
   end
 
   @spec cpu_cgroup_exists(String.t()) :: boolean
@@ -34,7 +37,7 @@ defmodule MuonTrapTest.Case do
 
   @spec random_cgroup_path :: String.t()
   def random_cgroup_path() do
-    "muontrap_test/test#{:rand.uniform(10000)}"
+    "proton_stream_test/test#{:rand.uniform(10000)}"
   end
 
   @spec os_pid_around?(non_neg_integer()) :: boolean
