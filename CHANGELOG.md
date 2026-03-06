@@ -1,5 +1,22 @@
 # Changelog
 
+## v2.0.0
+
+This is a major rewrite introducing a streaming API that mirrors Elixir's `Port` module.
+
+* Breaking changes
+  * Renamed from MuonTrap to ProtonStream
+  * Removed `ProtonStream.Daemon` - use `ProtonStream.open/3` with your own GenServer instead
+  * `ProtonStream.cmd/3` is deprecated in favor of `ProtonStream.open/3`
+
+* New features
+  * New streaming API via `ProtonStream.open/3` returns a GenServer that sends messages
+  * Bidirectional communication with stdin/stdout/stderr
+  * Messages TO ProtonStream: `{pid, {:command, data}}`, `{pid, :close}`, `{pid, {:connect, new_pid}}`
+  * Messages FROM ProtonStream: `{pid, {:data, data}}`, `{pid, {:error, data}}`, `{pid, :closed}`, `{:EXIT, pid, reason}`
+  * Separate stdout and stderr streams (stderr arrives as `{:error, data}`)
+  * Transfer ownership to another process with `connect/2`
+
 ## v1.7.0
 
 * New feature

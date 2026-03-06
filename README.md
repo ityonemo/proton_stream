@@ -2,17 +2,19 @@
 
 [![Hex version](https://img.shields.io/hexpm/v/proton_stream.svg "Hex version")](https://hex.pm/packages/proton_stream)
 [![API docs](https://img.shields.io/hexpm/v/proton_stream.svg?label=hexdocs "API docs")](https://hexdocs.pm/proton_stream/ProtonStream.html)
-[![CircleCI](https://dl.circleci.com/status-badge/img/gh/ityonemo/proton_stream/tree/main.svg?style=svg)](https://dl.circleci.com/status-badge/redirect/gh/ityonemo/proton_stream/tree/main)
+[![CI](https://github.com/ityonemo/proton_stream/actions/workflows/ci.yml/badge.svg)](https://github.com/ityonemo/proton_stream/actions/workflows/ci.yml)
 [![REUSE status](https://api.reuse.software/badge/github.com/ityonemo/proton_stream)](https://api.reuse.software/info/github.com/ityonemo/proton_stream)
 
-Keep programs, daemons, and applications launched from Erlang and Elixir
-contained and well-behaved. This lightweight library kills OS processes if the
-Elixir process running them crashes and if you're running on Linux, it can use
-cgroups to prevent many other shenanigans.
+A streaming API for OS processes that mirrors Elixir's `Port` module. ProtonStream
+keeps programs, daemons, and applications launched from Erlang and Elixir contained
+and well-behaved. This lightweight library kills OS processes if the Elixir process
+running them crashes and if you're running on Linux, it can use cgroups to prevent
+many other shenanigans.
 
-Some other features:
+Some features:
 
-* Attach your OS process to a supervision tree via a convenient `child_spec`
+* Streaming API that mirrors Elixir's `Port` module
+* Bidirectional communication with stdin/stdout/stderr
 * Set `cgroup` controls like thresholds on memory and CPU utilization
 * Start OS processes as a different user or group
 * Send SIGKILL to processes that aren't responsive to SIGTERM
@@ -30,67 +32,101 @@ def deps do
 end
 ```
 
-Run a command similar to
-[`System.cmd/3`](https://hexdocs.pm/elixir/System.html#cmd/3):
+## Streaming API
+
+The primary API is `ProtonStream.open/3` which starts a GenServer managing an OS
+process. The calling process becomes the "owner" and receives messages:
 
 ```elixir
-iex>  ProtonStream.cmd("echo", ["hello"])
+{:ok, ps} = ProtonStream.open("cat", [])
+
+# Send data to stdin
+send(ps, {self(), {:command, "hello"}})
+
+# Receive stdout
+receive do
+  {^ps, {:data, data}} -> IO.puts("Got: #{data}")
+end
+
+# Close when done
+send(ps, {self(), :close})
+```
+
+### Messages
+
+**Messages TO ProtonStream (from owner):**
+
+* `{pid, {:command, binary}}` - send data to child's stdin
+* `{pid, :close}` - close the port
+* `{pid, {:connect, new_pid}}` - transfer ownership to another process
+
+**Messages FROM ProtonStream (to owner):**
+
+* `{pid, {:data, data}}` - stdout from child process
+* `{pid, {:error, data}}` - stderr from child process
+* `{pid, :closed}` - reply to close request
+* `{pid, :connected}` - reply to connect request
+* `{:EXIT, pid, reason}` - process termination (when trapping exits)
+
+### Bidirectional Communication
+
+ProtonStream supports full bidirectional communication:
+
+```elixir
+{:ok, ps} = ProtonStream.open("bc", ["-q"])
+
+send(ps, {self(), {:command, "2 + 2\n"}})
+receive do
+  {^ps, {:data, "4\n"}} -> :ok
+end
+
+send(ps, {self(), {:command, "10 * 10\n"}})
+receive do
+  {^ps, {:data, "100\n"}} -> :ok
+end
+```
+
+## Blocking API
+
+For simple one-shot commands, use `ProtonStream.cmd/3` as a `System.cmd/3` replacement:
+
+```elixir
+iex> ProtonStream.cmd("echo", ["hello"])
 {"hello\n", 0}
 ```
-
-Attach a long running process to a supervision tree using a
-[child_spec](https://hexdocs.pm/elixir/Supervisor.html#module-child-specification)
-like the following:
-
-```elixir
-{ProtonStream.Daemon, ["long_running_command", ["arg1", "arg2"], options]}
-```
-
-Running on Linux and can use cgroups? Then create a new cgroup:
-
-```bash
-sudo cgcreate -a $(whoami) -g memory:mycgroup
-```
-
-```elixir
-{ProtonStream.Daemon,
- [
-   "long_running_command",
-   ["arg1", "arg2"],
-   [cgroup_controllers: ["memory"], cgroup_base: "mycgroup"]
- ]}
-```
-
-`ProtonStream` will create a cgroup under "mycgroup" to run the
-`"long_running_command"`. If the command fails, it will be restarted. If it
-should no longer be running (like if something else crashed in Elixir and
-supervision needs to clean up) then ProtonStream will kill `"long_running_command"`
-and all of its children.
-
-Want to know more about the motivations for this library? Read on in the
-[Background](#background) section.
 
 ## FAQ
 
 ### How do I watch stdout?
 
-If you're using `ProtonStream.cmd/3`, you don't get the called program's output
-until after it exits. Just like `System.cmd/3`, the `:into` option can be used
-to get the output as it's printed. Here's an example.
+Use `ProtonStream.open/3` and receive `{pid, {:data, data}}` messages:
 
 ```elixir
-ProtonStream.cmd("my_program", [], stderr_to_stdout: true, into: IO.binstream(:stdio, :line))
+{:ok, ps} = ProtonStream.open("my_program", [])
+
+# In a receive loop or GenServer handle_info:
+receive do
+  {^ps, {:data, data}} -> IO.write(data)
+  {^ps, {:error, data}} -> IO.write(:stderr, data)
+end
 ```
 
-If you're using `ProtonStream.Daemon`, then the best way is to send output to the
-logger. There are quite a few options, so see the `ProtonStream.Daemon` docs on what
-makes sense for you.
+### How do I send input to stdin?
 
-### How do I stop a ProtonStream.Daemon?
+Use the streaming API:
 
-Treat the `ProtonStream.Daemon` process just like any other Elixir process. If you
-put it in a supervision tree, call `Supervisor.terminate_child/2`. If you have
-it's pid, call `Process.exit/2`.
+```elixir
+{:ok, ps} = ProtonStream.open("cat", [])
+send(ps, {self(), {:command, "hello world\n"}})
+```
+
+### How do I stop a ProtonStream process?
+
+Send a close message:
+
+```elixir
+send(ps, {self(), :close})
+```
 
 ## Background
 
@@ -112,69 +148,20 @@ PING localhost (127.0.0.1): 56 data bytes
 64 bytes from 127.0.0.1: icmp_seq=1 ttl=64 time=0.077 ms
 ```
 
-To see that `ping` is running, call `ps` to look for it. You can also do this
-from a separate terminal window outside of IEx:
-
-```elixir
-iex> :os.cmd('ps -ef | grep ping') |> IO.puts
-  501 38820 38587   0  9:26PM ??         0:00.01 /sbin/ping -i 5 localhost
-  501 38824 38822   0  9:27PM ??         0:00.00 grep ping
-:ok
-```
-
-Now exit the Elixir process. Imagine here that in the real program that
-something happened in Elixir and the process needs to exit and be restarted by a
-supervisor.
+Now exit the Elixir process:
 
 ```elixir
 iex> Process.exit(pid, :oops)
 true
-iex> :os.cmd('ps -ef | grep ping') |> IO.puts
+iex> :os.cmd(~c"ps -ef | grep ping") |> IO.puts
   501 38820 38587   0  9:26PM ??         0:00.02 /sbin/ping -i 5 localhost
-  501 38833 38831   0  9:34PM ??         0:00.00 grep ping
 ```
 
-As you can tell, `ping` is still running after the exit. If you run `:observer`
-you'll see that Elixir did indeed terminate both the process and the port, but
-that didn't stop `ping`. The reason for this is that `ping` doesn't pay
-attention to `stdin` and doesn't notice the Erlang VM closing it to signal that
-it should exit.
-
-Imagine now that the process was supervised and it restarts. If this happens a
-regularly, you could be running dozens of `ping` commands.
+As you can tell, `ping` is still running after the exit. The reason is that
+`ping` doesn't pay attention to `stdin` and doesn't notice the Erlang VM closing
+it to signal that it should exit.
 
 This is just one of the problems that `proton_stream` fixes.
-
-## Applicability
-
-This is intended for long running processes. It's not great for interactive
-programs that communicate via the port or send signals. That feature is possible
-to add, but you'll probably be happier with other solutions like
-[erlexec](https://github.com/saleyn/erlexec/).
-
-## Running commands
-
-The simplest way to use `proton_stream` is as a replacement to `System.cmd/3`. Here's
-an example using `ping`:
-
-```elixir
-iex> pid = spawn(fn -> ProtonStream.cmd("ping", ["-i", "5", "localhost"], into: IO.stream(:stdio, :line)) end)
-#PID<0.30860.0>
-PING localhost (127.0.0.1): 56 data bytes
-64 bytes from 127.0.0.1: icmp_seq=0 ttl=64 time=0.027 ms
-64 bytes from 127.0.0.1: icmp_seq=1 ttl=64 time=0.081 ms
-```
-
-Now if you exit that process, `ping` gets killed as well:
-
-```elixir
-iex> Process.exit(pid, :oops)
-true
-iex> :os.cmd('ps -ef | grep ping') |> IO.puts
-  501 38898 38896   0  9:58PM ??         0:00.00 grep ping
-
-:ok
-```
 
 ## Containment with cgroups
 
@@ -182,133 +169,60 @@ Even if you don't make use of any cgroup controller features, having your port
 process contained can be useful just to make sure that everything is cleaned
 up on exit including any subprocesses.
 
-To set this up, first create a cgroup with appropriate permissions. Any path
-will do; `proton_stream` just needs to be able to create a subdirectory underneath it
-for its use. For example:
+To set this up, first create a cgroup with appropriate permissions:
 
 ```bash
 sudo cgcreate -a $(whoami) -g memory,cpu:mycgroup
 ```
 
-Be sure to create the group for all of the cgroup controllers that you wish to
-use with `proton_stream`. The above example creates it for the `memory` and `cpu`
-controllers.
-
-In Elixir, call `ProtonStream.cmd/3` with the
-cgroup options now. In this case, we'll use the `cpu` controller, but this
-example would work fine with any of the controllers.
+Then use the cgroup options:
 
 ```elixir
-iex>  ProtonStream.cmd("spawning_program", [], cgroup_controllers: ["cpu"], cgroup_base: "mycgroup")
-{"hello\n", 0}
+{:ok, ps} = ProtonStream.open("spawning_program", [],
+  cgroup_controllers: ["cpu"],
+  cgroup_base: "mycgroup"
+)
 ```
-
-In this example, `proton_stream` runs `spawning_program` in a sub-cgroup under the
-`cpu/mycgroup` group. The cgroup parameters may be modified outside of
-`proton_stream` using `cgset` or my accessing the cgroup mountpoint manually.
 
 On any error or if the Erlang VM closes the port or if `spawning_program` exits,
-`proton_stream` will kill all OS processes in cgroup. No need to worry about
-random processes accumulating on your system.
+`proton_stream` will kill all OS processes in cgroup.
 
-Note that if you use `cgroup_base`, a temporary cgroup is created for running
-the command. If you want `proton_stream` to use a particular cgroup and not create a
-subgroup for the command, use the `:cgroup_path` option. Note that if you
-explicitly specify a cgroup, be careful not to use it for anything else.
-`ProtonStream` assumes that it owns the cgroup and when it needs to kill processes,
-it kills all of them in the cgroup.
-
-### Limit the memory used by a process
-
-Linux's cgroups are very powerful and the examples here only scratch the
-surface. If you'd like to limit an OS process and all of its child processes to
-a maximum amount of memory, you can do that with the `memory` controller:
+### Limit memory
 
 ```elixir
-iex>  ProtonStream.cmd("memory_hog", [], cgroup_controllers: ["memory"], cgroup_base: "mycgroup", cgroup_sets: [{"memory", "memory.limit_in_bytes", "268435456"}])
+ProtonStream.open("memory_hog", [],
+  cgroup_controllers: ["memory"],
+  cgroup_base: "mycgroup",
+  cgroup_sets: [{"memory", "memory.limit_in_bytes", "268435456"}]
+)
 ```
 
-That line restricts the total memory used by `memory_hog` to 256 MB.
-
-### Limit CPU usage in a port
-
-Limiting the maximum CPU usage is also possible. Two parameters control that
-with the `cpu` controller: `cpu.cfs_period_us` specifies the number of
-microseconds in the scheduling period and `cpu.cfs_quota_us` specifies how many
-of those microseconds can be used. Here's an example call that prevents a
-program from using more than 50% of the CPU:
+### Limit CPU
 
 ```elixir
-iex>  ProtonStream.cmd("cpu_hog", [], cgroup_controllers: ["cpu"], cgroup_base: "mycgroup", cgroup_sets: [{"cpu", "cpu.cfs_period_us", "100000"}, {"cpu", "cpu.cfs_quota_us", 50000}])
-```
-
-## Supervision
-
-For many long running programs, you may want to restart them if they crash.
-Luckily Erlang already has mechanisms to do this. `ProtonStream` provides a
-`GenServer` called `ProtonStream.Daemon` that you can hook into one of your
-supervision trees.  For example, you could specify it like this in your
-application's supervisor:
-
-```elixir
-  def start(_type, _args) do
-    children = [
-      {ProtonStream.Daemon, ["command", ["arg1", "arg2"], options]}
-    ]
-
-    opts = [strategy: :one_for_one, name: MyApp.Supervisor]
-    Supervisor.start_link(children, opts)
-  end
-```
-
-Supervisors provide three restart strategies, `:permanent`, `:temporary`, and
-`:transient`. They work as follows:
-
-* `:permanent` - Always restart the command if it exits or crashes. Restarts are
-  limited to the Supervisor's restart intensity settings as they would be with
-  normal `GenServer`s. This is the default.
-* `:transient` - If the exit status of the command is 0 (i.e., success), then
-  don't restart. Any other exit status is considered an error and the command is
-  restarted.
-* `:temporary` - Don't restart
-
-If you're running more than one `ProtonStream.Daemon` under the same `Supervisor`,
-then you'll need to give each one a unique `:id`. Here's an example `child_spec`
-for setting the `:id` and the `:restart` parameters:
-
-```elixir
-    Supervisor.child_spec(
-        {ProtonStream.Daemon, ["command", ["arg1"], options]},
-         id: :my_daemon,
-         restart: :transient
-      )
+ProtonStream.open("cpu_hog", [],
+  cgroup_controllers: ["cpu"],
+  cgroup_base: "mycgroup",
+  cgroup_sets: [
+    {"cpu", "cpu.cfs_period_us", "100000"},
+    {"cpu", "cpu.cfs_quota_us", "50000"}
+  ]
+)
 ```
 
 ## stdio flow control
 
-The Erlang port feature does not implement flow control from messages coming
-from the port process. Since `ProtonStream` captures stdio from the program being
-run, it's possible that the program sends output so fast that it grows the
-Elixir process's mailbox big enough to cause an out-of-memory error.
+ProtonStream implements flow control to prevent the program's output from
+overwhelming the Elixir process's mailbox. The `:stdio_window` option specifies
+the maximum number of unacknowledged bytes allowed (default 10 KB).
 
-`ProtonStream` protects against this by implementing a flow control mechanism. When
-triggered, the running program's stdout and stderr file handles won't be read
-and hence it will eventually be blocked from writing to those handles.
+## Development
 
-The `:stdio_window` option specifies the maximum number of unacknowledged bytes
-allowed. The default is 10 KB.
-
-## proton_stream development
-
-In order to run the tests, some additional tools need to be installed.
-Specifically the `cgcreate` and `cgget` binaries need to be installed (and
-available on `$PATH`). Typically the package may be called `cgroup-tools` (on
-arch linux you need to install the `libcgroup` aur package).
-
-Then run:
+To run tests, install cgroup-tools (`cgcreate`, `cgget`):
 
 ```sh
 sudo cgcreate -a $(whoami) -g memory,cpu:proton_stream_test
+mix test
 ```
 
 ## License
