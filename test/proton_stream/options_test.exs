@@ -10,7 +10,7 @@ defmodule ProtonStream.OptionsTest do
   alias ProtonStream.Options
 
   test "creates random cgroup path when asked" do
-    options = Options.validate(:cmd, "echo", [], cgroup_base: "base")
+    options = Options.validate(:stream, "echo", [], cgroup_base: "base")
     assert Map.has_key?(options, :cgroup_path)
 
     ["base", other] = String.split(options.cgroup_path, "/")
@@ -19,28 +19,21 @@ defmodule ProtonStream.OptionsTest do
 
   test "disallow both cgroup_path and cgroup_base" do
     assert_raise ArgumentError, fn ->
-      Options.validate(:cmd, "echo", [], cgroup_base: "base", cgroup_path: "path")
+      Options.validate(:stream, "echo", [], cgroup_base: "base", cgroup_path: "path")
     end
   end
 
-  test "errors match System.cmd ones" do
-    for context <- [:cmd, :stream] do
-      assert_raise ArgumentError, fn ->
-        Options.validate(context, "echo", [~c"not_a_binary"], [])
-      end
+  test "validates arguments" do
+    assert_raise ArgumentError, fn ->
+      Options.validate(:stream, "echo", [~c"not_a_binary"], [])
+    end
 
-      assert_raise ArgumentError, fn ->
-        Options.validate(context, "why\0would_someone_do_this", [], [])
-      end
+    assert_raise ArgumentError, fn ->
+      Options.validate(:stream, "why\0would_someone_do_this", [], [])
     end
   end
 
-  test "cmd-specific options" do
-    # :cmd-only
-    assert Map.get(Options.validate(:cmd, "echo", [], into: ""), :into) == ""
-    assert Map.get(Options.validate(:cmd, "echo", [], timeout: 1000), :timeout) == 1000
-
-    # :stream doesn't support :into or :timeout
+  test "rejects invalid options" do
     assert_raise ArgumentError, fn ->
       Options.validate(:stream, "echo", [], into: "")
     end
@@ -50,7 +43,7 @@ defmodule ProtonStream.OptionsTest do
     end
   end
 
-  test "common commands basically work" do
+  test "common options work" do
     input = [
       cd: "path",
       arg0: "arg0",
@@ -67,22 +60,20 @@ defmodule ProtonStream.OptionsTest do
       cgroup_sets: [{"memory", "memory.limit_in_bytes", "268435456"}]
     ]
 
-    for context <- [:stream, :cmd] do
-      options = Options.validate(context, "echo", [], input)
+    options = Options.validate(:stream, "echo", [], input)
 
-      assert Map.get(options, :cd) == "path"
-      assert Map.get(options, :arg0) == "arg0"
-      assert Map.get(options, :stderr_to_stdout) == true
-      assert Map.get(options, :capture_stderr_only) == true
-      assert Map.get(options, :parallelism) == true
-      assert Map.get(options, :uid) == 5
-      assert Map.get(options, :gid) == "bill"
-      assert Map.get(options, :delay_to_sigkill) == 1
-      assert Map.get(options, :stdio_window) == 1024
-      assert Map.get(options, :env) == [{~c"KEY", ~c"VALUE"}, {~c"KEY2", ~c"VALUE2"}]
-      assert Map.get(options, :cgroup_controllers) == ["memory", "cpu"]
-      assert Map.get(options, :cgroup_base) == "base"
-      assert Map.get(options, :cgroup_sets) == [{"memory", "memory.limit_in_bytes", "268435456"}]
-    end
+    assert Map.get(options, :cd) == "path"
+    assert Map.get(options, :arg0) == "arg0"
+    assert Map.get(options, :stderr_to_stdout) == true
+    assert Map.get(options, :capture_stderr_only) == true
+    assert Map.get(options, :parallelism) == true
+    assert Map.get(options, :uid) == 5
+    assert Map.get(options, :gid) == "bill"
+    assert Map.get(options, :delay_to_sigkill) == 1
+    assert Map.get(options, :stdio_window) == 1024
+    assert Map.get(options, :env) == [{~c"KEY", ~c"VALUE"}, {~c"KEY2", ~c"VALUE2"}]
+    assert Map.get(options, :cgroup_controllers) == ["memory", "cpu"]
+    assert Map.get(options, :cgroup_base) == "base"
+    assert Map.get(options, :cgroup_sets) == [{"memory", "memory.limit_in_bytes", "268435456"}]
   end
 end

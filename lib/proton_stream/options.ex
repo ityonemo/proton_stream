@@ -7,7 +7,7 @@
 
 defmodule ProtonStream.Options do
   @moduledoc """
-  Validate and normalize the options passed to ProtonStream.open/3 and ProtonStream.cmd/3.
+  Validate and normalize the options passed to `ProtonStream.open/3`.
 
   This module is generally not called directly, but it's likely
   the source of exceptions if any options aren't quite right. Call `validate/4` directly to
@@ -17,12 +17,11 @@ defmodule ProtonStream.Options do
   @typedoc """
   The following fields are always present:
 
-  * `:cmd` - the command to run
+  * `:command` - the command to run
   * `:args` - a list of arguments to the command
 
   The next fields are optional:
 
-  * `:into` - `ProtonStream.cmd/3` only
   * `:cd`
   * `:arg0`
   * `:stderr_to_stdout`
@@ -37,28 +36,24 @@ defmodule ProtonStream.Options do
   * `:cgroup_sets`
   * `:uid`
   * `:gid`
-  * `:timeout` - `ProtonStream.cmd/3` only
 
   """
   @type t() :: map()
 
   @doc """
-  Validate options and normalize them for invoking commands
-
-  Pass in `:cmd` or `:stream` for the first parameter to allow
-  function-specific options.
+  Validate options and normalize them for invoking commands.
   """
-  @spec validate(:cmd | :stream, binary(), [binary()], keyword()) :: t()
-  def validate(context, cmd, args, opts) when context in [:cmd, :stream] do
-    assert_no_null_byte!(cmd, context)
+  @spec validate(:stream, binary(), [binary()], keyword()) :: t()
+  def validate(:stream, cmd, args, opts) do
+    assert_no_null_byte!(cmd)
 
     if !Enum.all?(args, &is_binary/1) do
-      raise ArgumentError, "all arguments for #{operation(context)} must be binaries"
+      raise ArgumentError, "all arguments for ProtonStream.open/3 must be binaries"
     end
 
     abs_command = System.find_executable(cmd) || :erlang.error(:enoent, [cmd, args, opts])
 
-    validate_options(context, abs_command, args, opts)
+    validate_options(abs_command, args, opts)
     |> resolve_cgroup_path()
   end
 
@@ -78,71 +73,58 @@ defmodule ProtonStream.Options do
     Integer.to_string(:rand.uniform(0x100000000), 36) |> String.downcase()
   end
 
-  defp validate_options(context, cmd, args, opts) do
-    # Stream context uses :command key and no :into default
-    initial =
-      case context do
-        :stream -> %{command: cmd, args: args}
-        _ -> %{cmd: cmd, args: args, into: ""}
-      end
-
+  defp validate_options(cmd, args, opts) do
     Enum.reduce(
       opts,
-      initial,
-      &validate_option(context, &1, &2)
+      %{command: cmd, args: args},
+      &validate_option(&1, &2)
     )
   end
 
-  # System.cmd/3 options
-  defp validate_option(:cmd, {:into, what}, opts), do: Map.put(opts, :into, what)
-  defp validate_option(_any, {:cd, bin}, opts) when is_binary(bin), do: Map.put(opts, :cd, bin)
+  defp validate_option({:cd, bin}, opts) when is_binary(bin), do: Map.put(opts, :cd, bin)
 
-  defp validate_option(_any, {:arg0, bin}, opts) when is_binary(bin),
+  defp validate_option({:arg0, bin}, opts) when is_binary(bin),
     do: Map.put(opts, :arg0, bin)
 
-  defp validate_option(_any, {:stderr_to_stdout, bool}, opts) when is_boolean(bool),
+  defp validate_option({:stderr_to_stdout, bool}, opts) when is_boolean(bool),
     do: Map.put(opts, :stderr_to_stdout, bool)
 
-  defp validate_option(_any, {:capture_stderr_only, bool}, opts) when is_boolean(bool),
+  defp validate_option({:capture_stderr_only, bool}, opts) when is_boolean(bool),
     do: Map.put(opts, :capture_stderr_only, bool)
 
-  defp validate_option(_any, {:parallelism, bool}, opts) when is_boolean(bool),
+  defp validate_option({:parallelism, bool}, opts) when is_boolean(bool),
     do: Map.put(opts, :parallelism, bool)
 
-  defp validate_option(_any, {:env, enum}, opts),
+  defp validate_option({:env, enum}, opts),
     do: Map.put(opts, :env, validate_env(enum))
 
-  defp validate_option(_any, {:stdio_window, count}, opts) when is_integer(count),
+  defp validate_option({:stdio_window, count}, opts) when is_integer(count),
     do: Map.put(opts, :stdio_window, count)
 
-  # ProtonStream common options
-  defp validate_option(_any, {:cgroup_controllers, controllers}, opts) when is_list(controllers),
+  defp validate_option({:cgroup_controllers, controllers}, opts) when is_list(controllers),
     do: Map.put(opts, :cgroup_controllers, controllers)
 
-  defp validate_option(_any, {:cgroup_path, path}, opts) when is_binary(path) do
+  defp validate_option({:cgroup_path, path}, opts) when is_binary(path) do
     Map.put(opts, :cgroup_path, path)
   end
 
-  defp validate_option(_any, {:cgroup_base, path}, opts) when is_binary(path) do
+  defp validate_option({:cgroup_base, path}, opts) when is_binary(path) do
     Map.put(opts, :cgroup_base, path)
   end
 
-  defp validate_option(_any, {:delay_to_sigkill, delay}, opts) when is_integer(delay),
+  defp validate_option({:delay_to_sigkill, delay}, opts) when is_integer(delay),
     do: Map.put(opts, :delay_to_sigkill, delay)
 
-  defp validate_option(_any, {:cgroup_sets, sets}, opts) when is_list(sets),
+  defp validate_option({:cgroup_sets, sets}, opts) when is_list(sets),
     do: Map.put(opts, :cgroup_sets, sets)
 
-  defp validate_option(_any, {:uid, id}, opts) when is_integer(id) or is_binary(id),
+  defp validate_option({:uid, id}, opts) when is_integer(id) or is_binary(id),
     do: Map.put(opts, :uid, id)
 
-  defp validate_option(_any, {:gid, id}, opts) when is_integer(id) or is_binary(id),
+  defp validate_option({:gid, id}, opts) when is_integer(id) or is_binary(id),
     do: Map.put(opts, :gid, id)
 
-  defp validate_option(:cmd, {:timeout, timeout}, opts) when is_integer(timeout) and timeout > 0,
-    do: Map.put(opts, :timeout, timeout)
-
-  defp validate_option(_any, {key, val}, _opts),
+  defp validate_option({key, val}, _opts),
     do: raise(ArgumentError, "invalid option #{inspect(key)} with value #{inspect(val)}")
 
   defp validate_env(enum) do
@@ -158,18 +140,14 @@ defmodule ProtonStream.Options do
     end)
   end
 
-  # Copied from Elixir's system.ex to make ProtonStream.cmd pass System.cmd's tests
-  defp assert_no_null_byte!(binary, context) do
+  defp assert_no_null_byte!(binary) do
     case :binary.match(binary, "\0") do
       {_, _} ->
         raise ArgumentError,
-              "cannot execute #{operation(context)} for program with null byte, got: #{inspect(binary)}"
+              "cannot execute ProtonStream.open/3 for program with null byte, got: #{inspect(binary)}"
 
       :nomatch ->
         :ok
     end
   end
-
-  defp operation(:cmd), do: "ProtonStream.cmd/3"
-  defp operation(:stream), do: "ProtonStream.open/3"
 end

@@ -1,7 +1,7 @@
 defmodule ProtonStream.MixProject do
   use Mix.Project
 
-  @version "1.7.0"
+  @version "1.8.0"
   @source_url "https://github.com/ityonemo/proton_stream"
 
   def project do
@@ -41,7 +41,8 @@ defmodule ProtonStream.MixProject do
       {:elixir_make, "~> 0.6", runtime: false},
       {:ex_doc, "~> 0.19", only: :docs, runtime: false},
       {:dialyxir, "~> 1.2", only: :dev, runtime: false},
-      {:credo, "~> 1.5", only: :dev, runtime: false}
+      {:credo, "~> 1.5", only: :dev, runtime: false},
+      {:muontrap, "~> 1.0", only: :dev, runtime: false}
     ]
   end
 

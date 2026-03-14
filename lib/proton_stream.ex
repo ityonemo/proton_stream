@@ -8,17 +8,26 @@ defmodule ProtonStream do
   @moduledoc """
   ProtonStream provides a streaming API for OS processes that mirrors Elixir's Port module.
 
-  The main entry point is `open/3` which starts a GenServer managing an OS process.
-  The calling process becomes the "owner" and receives messages about stdout, stderr,
-  and process termination.
+  This library is derived from `MuonTrap` by Frank Hunleth,
+  with a new streaming API and bidirectional stdin/stdout/stderr support.
 
-  ## Messages TO ProtonStream (from owner)
+  ProtonStream can be used in two modes:
+
+  1. **Message-based mode** - via `open/3`, where the calling process receives messages
+  2. **Callback module mode** - via `start_link/4`, where a GenServer module handles events
+
+  ## Message-based Mode
+
+  Use `open/3` to start a process. The calling process becomes the "owner" and
+  receives messages about stdout, stderr, and process termination.
+
+  ### Messages TO ProtonStream (from owner)
 
   - `{pid, {:command, binary}}` - send data to child's stdin
   - `{pid, :close}` - close the port
   - `{pid, {:connect, new_pid}}` - transfer ownership to another process
 
-  ## Messages FROM ProtonStream (to owner)
+  ### Messages FROM ProtonStream (to owner)
 
   - `{pid, {:data, data}}` - stdout from child process
   - `{pid, {:error, data}}` - stderr from child process
@@ -26,7 +35,7 @@ defmodule ProtonStream do
   - `{pid, :connected}` - reply to connect request
   - `{:EXIT, pid, reason}` - process termination (when trapping exits)
 
-  ## Example
+  ### Example
 
       {:ok, ps} = ProtonStream.open("cat", [])
       send(ps, {self(), {:command, "hello"}})
@@ -37,6 +46,72 @@ defmodule ProtonStream do
 
       send(ps, {self(), :close})
 
+  ## Callback Module Mode
+
+  For integration with supervision trees, use `start_link/4` with a callback module
+  that implements both `GenServer` and the `ProtonStream` behaviour.
+
+  ### Callbacks
+
+  The following callbacks must be implemented:
+
+  - `c:init/1` - called when the process starts, returns initial state
+  - `c:handle_stdout/2` - called when stdout data is received
+  - `c:handle_stderr/2` - called when stderr data is received
+  - `c:handle_exit/2` - called when the child process exits
+
+  ### Example
+
+      defmodule MyWorker do
+        use GenServer
+        @behaviour ProtonStream
+
+        def start_link(args) do
+          ProtonStream.start_link(__MODULE__, "my_command", [], args)
+        end
+
+        @impl GenServer
+        def init(args) do
+          {:ok, %{buffer: "", args: args}}
+        end
+
+        @impl ProtonStream
+        def handle_stdout(data, state) do
+          {:noreply, %{state | buffer: state.buffer <> data}}
+        end
+
+        @impl ProtonStream
+        def handle_stderr(data, state) do
+          IO.puts(:stderr, data)
+          {:noreply, state}
+        end
+
+        @impl ProtonStream
+        def handle_exit(reason, state) do
+          {:stop, reason, state}
+        end
+      end
+
+  The module can then be added to a supervision tree:
+
+      children = [
+        {MyWorker, [some: :args]}
+      ]
+
+      Supervisor.start_link(children, strategy: :one_for_one)
+
+  ### Callback Return Values
+
+  - `c:init/1` returns `{:ok, state}` or `{:stop, reason}`
+  - `c:handle_stdout/2` returns `{:noreply, state}` or `{:stop, reason, state}`
+  - `c:handle_stderr/2` returns `{:noreply, state}` or `{:stop, reason, state}`
+  - `c:handle_exit/2` returns `{:stop, reason, state}`
+
+  ### GenServer Callbacks
+
+  The callback module may also implement `c:GenServer.handle_call/3` and
+  `c:GenServer.handle_cast/2` to handle synchronous and asynchronous requests.
+
   ## Configuring cgroups
 
   On most Linux distributions, use `cgcreate` to create a new cgroup:
@@ -45,13 +120,29 @@ defmodule ProtonStream do
   sudo cgcreate -a $(whoami) -g memory,cpu:proton_stream
   ```
 
-  Then use the `:cgroup_controllers` and `:cgroup_base` options with `open/3`.
+  Then use the `:cgroup_controllers` and `:cgroup_base` options.
   """
 
   use GenServer
 
   import Bitwise
   require Logger
+
+  # Behaviour callbacks for callback module mode
+  @callback handle_stdout(data :: binary(), state :: term()) ::
+              {:noreply, new_state :: term()}
+              | {:noreply, new_state :: term(), timeout() | :hibernate | {:continue, term()}}
+              | {:stop, reason :: term(), new_state :: term()}
+
+  @callback handle_stderr(data :: binary(), state :: term()) ::
+              {:noreply, new_state :: term()}
+              | {:noreply, new_state :: term(), timeout() | :hibernate | {:continue, term()}}
+              | {:stop, reason :: term(), new_state :: term()}
+
+  @callback handle_exit(reason :: term(), state :: term()) ::
+              {:stop, reason :: term(), new_state :: term()}
+
+  @optional_callbacks handle_stdout: 2, handle_stderr: 2, handle_exit: 2
 
   # Frame protocol tags (C -> Elixir)
   @frame_tag_stdout 0x01
@@ -63,7 +154,7 @@ defmodule ProtonStream do
   @frame_cmd_close 0x02
   @frame_cmd_ack 0x03
 
-  defstruct [:port, :owner, :command, :args, :buffer, :cgroup_path]
+  defstruct [:port, :owner, :command, :args, :buffer, :cgroup_path, :state]
 
   @type t :: %__MODULE__{
           port: port() | nil,
@@ -71,7 +162,8 @@ defmodule ProtonStream do
           command: binary(),
           args: [binary()],
           buffer: binary(),
-          cgroup_path: binary() | nil
+          cgroup_path: binary() | nil,
+          state: term()
         }
 
   # Public API
@@ -103,9 +195,14 @@ defmodule ProtonStream do
         {^ps, {:data, "hello\\n"}} -> :ok
       end
   """
-  @spec open(binary(), [binary()], keyword()) :: {:ok, pid()} | {:error, term()}
+  @spec open(binary(), [binary()], keyword()) :: GenServer.on_start()
   def open(command, args \\ [], opts \\ []) when is_binary(command) and is_list(args) do
     GenServer.start_link(__MODULE__, {command, args, opts, self()})
+  end
+
+  @spec start_link(module, binary(), [binary()], term(), keyword()) :: GenServer.on_start()
+  def start_link(module, command, args \\ [], init_arg \\ [], opts \\ []) do
+    GenServer.start_link(__MODULE__, {command, args, opts, module, init_arg})
   end
 
   @doc """
@@ -148,7 +245,7 @@ defmodule ProtonStream do
   """
   @spec os_pid(pid()) :: non_neg_integer() | nil
   def os_pid(server) do
-    GenServer.call(server, :os_pid)
+    GenServer.call(server, :"$os_pid")
   end
 
   @doc """
@@ -159,40 +256,55 @@ defmodule ProtonStream do
   # GenServer Callbacks
 
   @impl true
-  def init({command, args, opts, owner}) do
+  def init({command, args, opts, owner}) when is_pid(owner) do
     Process.flag(:trap_exit, true)
     Process.link(owner)
 
-    try do
-      options = ProtonStream.Options.validate(:stream, command, args, opts)
+    options = ProtonStream.Options.validate(:stream, command, args, opts)
+    muontrap_args = build_muontrap_args(options)
+    port_options = build_port_options(options)
 
-      muontrap_args = build_muontrap_args(options)
-      port_options = build_port_options(options)
+    {:ok, new(muontrap_args, port_options, command, args, options, owner)}
+  end
 
-      port =
-        Port.open(
-          {:spawn_executable, muontrap_path()},
-          [:binary, :exit_status, {:args, muontrap_args} | port_options]
-        )
+  def init({command, args, opts, module, init_arg}) when is_atom(module) do
+    Process.flag(:trap_exit, true)
 
-      state = %__MODULE__{
-        port: port,
-        owner: owner,
-        command: command,
-        args: args,
-        buffer: <<>>,
-        cgroup_path: options[:cgroup_path]
-      }
+    options = ProtonStream.Options.validate(:stream, command, args, opts)
+    muontrap_args = build_muontrap_args(options)
+    port_options = build_port_options(options)
 
-      {:ok, state}
-    rescue
-      e in ErlangError ->
-        {:stop, e.original}
+    case module.init(init_arg) do
+      {:ok, callback_state} ->
+        {:ok, new(muontrap_args, port_options, command, args, options, module, callback_state)}
+      {:stop, reason} ->
+        {:stop, reason}
+      other ->
+        {:stop, {:bad_return_value, other}}
     end
   end
 
+  defp new(muontrap_args, port_options, command, args, options, owner, state \\ nil) do
+    port =
+      Port.open(
+        {:spawn_executable, muontrap_path()},
+        [:binary, :exit_status, {:args, muontrap_args} | port_options]
+      )
+
+    %__MODULE__{
+          port: port,
+          owner: owner,
+          command: command,
+          args: args,
+          buffer: <<>>,
+          cgroup_path: options[:cgroup_path],
+          state: state
+    }
+  end
+
+
   @impl true
-  def handle_call(:os_pid, _from, state) do
+  def handle_call(:"$os_pid", _from, state) do
     os_pid =
       case Port.info(state.port, :os_pid) do
         {:os_pid, pid} -> pid
@@ -202,16 +314,53 @@ defmodule ProtonStream do
     {:reply, os_pid, state}
   end
 
+  def handle_call(msg, from, %{owner: module} = state) when is_atom(module) do
+    if !function_exported?(module, :handle_call, 3) do
+      raise "attempted to call #{inspect(module)} but no handle_call/3 clause was provided"
+    end
+
+    case module.handle_call(msg, from, state.state) do
+      {:reply, reply, new_state} ->
+        {:reply, reply, %{state | state: new_state}}
+      {:reply, reply, new_state, timeout_or_continue} ->
+        {:reply, reply, %{state | state: new_state}, timeout_or_continue}
+      {:noreply, new_state} ->
+        {:noreply, %{state | state: new_state}}
+      {:noreply, new_state, timeout_or_continue} ->
+        {:noreply, %{state | state: new_state}, timeout_or_continue}
+      {:stop, reason, reply, new_state} ->
+        {:stop, reason, reply, %{state | state: new_state}}
+      {:stop, reason, new_state} ->
+        {:stop, reason, %{state | state: new_state}}
+    end
+  end
+
   @impl true
-  def handle_info({port, {:data, data}}, %{port: port} = state) do
+  def handle_cast(msg, %{owner: module} = state) when is_atom(module) do
+    if !function_exported?(module, :handle_cast, 2) do
+      raise "attempted to cast to #{inspect(module)} but no handle_cast/2 clause was provided"
+    end
+
+    case module.handle_cast(msg, state.state) do
+      {:noreply, new_state} ->
+        {:noreply, %{state | state: new_state}}
+      {:noreply, new_state, timeout_or_continue} ->
+        {:noreply, %{state | state: new_state}, timeout_or_continue}
+      {:stop, reason, new_state} ->
+        {:stop, reason, %{state | state: new_state}}
+    end
+  end
+
+  @impl true
+  def handle_info({port, {:data, data}}, %{port: port, owner: owner} = state) when is_pid(owner) do
     {frames, buffer} = parse_frames(state.buffer <> data)
 
     Enum.each(frames, fn
       {:stdout, payload} ->
-        send(state.owner, {self(), {:data, payload}})
+        send(owner, {self(), {:data, payload}})
 
       {:stderr, payload} ->
-        send(state.owner, {self(), {:error, payload}})
+        send(owner, {self(), {:error, payload}})
 
       {:exit_status, status} ->
         handle_exit_status(status, state)
@@ -220,35 +369,63 @@ defmodule ProtonStream do
     {:noreply, %{state | buffer: buffer}}
   end
 
+  def handle_info({port, {:data, data}}, %{port: port, owner: module} = state) when is_atom(module) do
+    {frames, buffer} = parse_frames(state.buffer <> data)
+
+    result =
+      Enum.reduce_while(frames, {:noreply, %{state | buffer: buffer}}, fn frame, {_, acc_state} ->
+        case handle_callback_frame(frame, module, acc_state) do
+          {:noreply, new_state} -> {:cont, {:noreply, new_state}}
+          {:noreply, new_state, extra} -> {:cont, {:noreply, new_state, extra}}
+          {:stop, reason, new_state} -> {:halt, {:stop, reason, new_state}}
+        end
+      end)
+
+    result
+  end
+
   def handle_info({port, {:exit_status, _status}}, %{port: port} = state) do
     # The exit status frame should have been received already via the framed protocol
     # This is just cleanup - mark port as nil since it's already closed
     {:stop, :normal, %{state | port: nil}}
   end
 
-  # Owner commands
-  def handle_info({from, {:command, data}}, %{owner: from} = state) do
+  # Owner commands (message-based mode)
+  def handle_info({from, {:command, data}}, %{owner: from} = state) when is_pid(from) do
     send_stdin_frame(state.port, data)
     {:noreply, state}
   end
 
-  def handle_info({from, :close}, %{owner: from} = state) do
+  def handle_info({from, :close}, %{owner: from} = state) when is_pid(from) do
     send_close_frame(state.port)
     Port.close(state.port)
     send(from, {self(), :closed})
     {:stop, :normal, %{state | port: nil}}
   end
 
-  def handle_info({from, {:connect, new_pid}}, %{owner: from} = state) do
+  def handle_info({from, {:connect, new_pid}}, %{owner: from} = state) when is_pid(from) do
     Process.link(new_pid)
     Process.unlink(from)
     send(from, {self(), :connected})
     {:noreply, %{state | owner: new_pid}}
   end
 
-  # Ignore messages from non-owner
-  def handle_info({_from, {:command, _}}, state), do: {:noreply, state}
-  def handle_info({_from, :close}, state), do: {:noreply, state}
+  # Commands for callback module mode - any process can send
+  def handle_info({_from, {:command, data}}, %{owner: module} = state) when is_atom(module) do
+    send_stdin_frame(state.port, data)
+    {:noreply, state}
+  end
+
+  def handle_info({from, :close}, %{owner: module} = state) when is_atom(module) do
+    send_close_frame(state.port)
+    Port.close(state.port)
+    send(from, {self(), :closed})
+    {:stop, :normal, %{state | port: nil}}
+  end
+
+  # Ignore messages from non-owner (message-based mode only)
+  def handle_info({_from, {:command, _}}, %{owner: owner} = state) when is_pid(owner), do: {:noreply, state}
+  def handle_info({_from, :close}, %{owner: owner} = state) when is_pid(owner), do: {:noreply, state}
   def handle_info({_from, {:connect, _}}, state), do: {:noreply, state}
 
   # Handle linked process exit
@@ -262,20 +439,35 @@ defmodule ProtonStream do
     {:stop, reason, state}
   end
 
-  def handle_info(msg, state) do
+  def handle_info(msg, state) when is_pid(state.owner) do
     Logger.warning("ProtonStream: unexpected message: #{inspect(msg)}")
     {:noreply, state}
   end
 
-  @impl true
-  def terminate(_reason, state) do
-    if state.port do
-      # Closing the port will trigger the C helper to clean up cgroups
-      Port.close(state.port)
+  def handle_info(msg, %{owner: module} = state) when is_atom(module) do
+    if !function_exported?(module, :handle_info, 2) do
+      raise "attempted to send message to #{inspect(module)} but no handle_info/2 clause was provided"
     end
 
+    case module.handle_info(msg, state.state) do
+      {:noreply, new_state} ->
+        {:noreply, %{state | state: new_state}}
+      {:noreply, new_state, timeout_or_continue} ->
+        {:noreply, %{state | state: new_state}, timeout_or_continue}
+      {:stop, reason, new_state} ->
+        {:stop, reason, %{state | state: new_state}}
+    end
+  end
+
+  @impl true
+  def terminate(reason, %{owner: module} = state) when is_atom(module) do
+    if function_exported?(module, :terminate, 2) do
+      module.terminate(reason, state.state)
+    end
     :ok
   end
+
+  def terminate(_reason, _state), do: :ok
 
   # Private helpers
 
@@ -398,6 +590,53 @@ defmodule ProtonStream do
     {:unknown, tag}
   end
 
+  # Handle frames for callback module mode
+  defp handle_callback_frame({:stdout, payload}, module, state) do
+    if function_exported?(module, :handle_stdout, 2) do
+      case module.handle_stdout(payload, state.state) do
+        {:noreply, new_state} ->
+          {:noreply, %{state | state: new_state}}
+        {:noreply, new_state, extra} ->
+          {:noreply, %{state | state: new_state}, extra}
+        {:stop, reason, new_state} ->
+          {:stop, reason, %{state | state: new_state}}
+      end
+    else
+      {:noreply, state}
+    end
+  end
+
+  defp handle_callback_frame({:stderr, payload}, module, state) do
+    if function_exported?(module, :handle_stderr, 2) do
+      case module.handle_stderr(payload, state.state) do
+        {:noreply, new_state} ->
+          {:noreply, %{state | state: new_state}}
+        {:noreply, new_state, extra} ->
+          {:noreply, %{state | state: new_state}, extra}
+        {:stop, reason, new_state} ->
+          {:stop, reason, %{state | state: new_state}}
+      end
+    else
+      {:noreply, state}
+    end
+  end
+
+  defp handle_callback_frame({:exit_status, status}, module, state) do
+    reason = exit_reason(status)
+    if function_exported?(module, :handle_exit, 2) do
+      case module.handle_exit(reason, state.state) do
+        {:stop, stop_reason, new_state} ->
+          {:stop, stop_reason, %{state | state: new_state}}
+      end
+    else
+      {:stop, reason, state}
+    end
+  end
+
+  defp handle_callback_frame({:unknown, _tag}, _module, state) do
+    {:noreply, state}
+  end
+
   defp handle_exit_status(status, state) do
     reason = exit_reason(status)
 
@@ -452,59 +691,5 @@ defmodule ProtonStream do
 
   defp build_acks(bytes, acc) do
     build_acks(0, [bytes - 1 | acc])
-  end
-
-  # Legacy API - kept for backwards compatibility during transition
-
-  @doc ~S"""
-  Executes a command like `System.cmd/3` via the `muontrap` wrapper.
-
-  > #### Deprecated {: .warning}
-  >
-  > This function is deprecated. Use `ProtonStream.open/3` for the streaming API instead.
-
-  ## Options
-
-    * `:cgroup_controllers` - run the command under the specified cgroup controllers. Defaults to `[]`.
-    * `:cgroup_base` - create a temporary path under the specified cgroup path
-    * `:cgroup_path` - explicitly specify a path to use. Use `:cgroup_base`, unless you must control the path.
-    * `:cgroup_sets` - set a cgroup controller parameter before running the command
-    * `:delay_to_sigkill` - milliseconds before sending a SIGKILL to a child process if it doesn't exit with a SIGTERM (default 500 ms)
-    * `:uid` - run the command using the specified uid or username
-    * `:gid` - run the command using the specified gid or group
-    * `:timeout` - milliseconds to wait for the command to complete. If the
-      command does not exit before the timeout, the return value will contain
-      the output up to that point and `:timeout` as the exit status. The child
-      process will be sent SIGTERM
-
-  The following `System.cmd/3` options are also available:
-
-    * `:into` - injects the result into the given collectable, defaults to `""`
-    * `:cd` - the directory to run the command in
-    * `:env` - an enumerable of tuples containing environment key-value as binary
-    * `:arg0` - sets the command arg0
-    * `:stderr_to_stdout` - redirects stderr to stdout when `true`
-    * `:capture_stderr_only` - when `true`, captures only stderr and ignores stdout (useful for capturing errors while ignoring normal output)
-    * `:parallelism` - when `true`, the VM will schedule port tasks to improve
-      parallelism in the system. If set to `false`, the VM will try to perform
-      commands immediately, improving latency at the expense of parallelism.
-      The default can be set on system startup by passing the "+spp" argument
-      to `--erl`.
-
-  ## Examples
-
-  Run a command:
-
-  ```elixir
-  iex> ProtonStream.cmd("echo", ["hello"])
-  {"hello\n", 0}
-  ```
-  """
-  @spec cmd(binary(), [binary()], keyword()) ::
-          {Collectable.t(), exit_status :: non_neg_integer() | :timeout}
-  def cmd(command, args, opts \\ []) when is_binary(command) and is_list(args) do
-    options = ProtonStream.Options.validate(:cmd, command, args, opts)
-
-    ProtonStream.Port.cmd(options)
   end
 end

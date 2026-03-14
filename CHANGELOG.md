@@ -1,13 +1,20 @@
 # Changelog
 
-## v2.0.0
+## v1.8.0
+
+* New features
+  * Callback module mode via `ProtonStream.start_link/5` for supervision tree integration
+  * Implement `@behaviour ProtonStream` with `handle_stdout/2`, `handle_stderr/2`, `handle_exit/2` callbacks
+  * Callback modules also use `GenServer` and can implement `handle_call/3`, `handle_cast/2`, `handle_info/2`
+
+## v1.7.0
 
 This is a major rewrite introducing a streaming API that mirrors Elixir's `Port` module.
 
 * Breaking changes
   * Renamed from MuonTrap to ProtonStream
   * Removed `ProtonStream.Daemon` - use `ProtonStream.open/3` with your own GenServer instead
-  * `ProtonStream.cmd/3` is deprecated in favor of `ProtonStream.open/3`
+  * Removed `ProtonStream.cmd/3` - use `ProtonStream.open/3` for the streaming API
 
 * New features
   * New streaming API via `ProtonStream.open/3` returns a GenServer that sends messages
@@ -16,13 +23,6 @@ This is a major rewrite introducing a streaming API that mirrors Elixir's `Port`
   * Messages FROM ProtonStream: `{pid, {:data, data}}`, `{pid, {:error, data}}`, `{pid, :closed}`, `{:EXIT, pid, reason}`
   * Separate stdout and stderr streams (stderr arrives as `{:error, data}`)
   * Transfer ownership to another process with `connect/2`
-
-## v1.7.0
-
-* New feature
-  * Add `:capture_stderr_only` option to capture only stderr while ignoring stdout.
-    This is useful when you want to capture error messages but not regular output.
-    Works with both `MuonTrap.cmd/3` and `MuonTrap.Daemon`. (@fermuch)
 
 ## v1.6.1
 

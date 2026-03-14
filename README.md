@@ -27,7 +27,7 @@ Add `proton_stream` to your project's `mix.exs` dependency list:
 ```elixir
 def deps do
   [
-    {:proton_stream, "~> 1.0"}
+    {:proton_stream, "~> 1.8"}
   ]
 end
 ```
@@ -86,14 +86,55 @@ receive do
 end
 ```
 
-## Blocking API
+## Callback Module Mode
 
-For simple one-shot commands, use `ProtonStream.cmd/3` as a `System.cmd/3` replacement:
+For integration with supervision trees, use `ProtonStream.start_link/5` with a callback
+module that implements the `ProtonStream` behaviour:
 
 ```elixir
-iex> ProtonStream.cmd("echo", ["hello"])
-{"hello\n", 0}
+defmodule MyWorker do
+  use GenServer
+  @behaviour ProtonStream
+
+  def start_link(args) do
+    ProtonStream.start_link(__MODULE__, "my_command", [], args, [])
+  end
+
+  @impl GenServer
+  def init(args) do
+    {:ok, %{buffer: "", args: args}}
+  end
+
+  @impl ProtonStream
+  def handle_stdout(data, state) do
+    {:noreply, %{state | buffer: state.buffer <> data}}
+  end
+
+  @impl ProtonStream
+  def handle_stderr(data, state) do
+    IO.puts(:stderr, data)
+    {:noreply, state}
+  end
+
+  @impl ProtonStream
+  def handle_exit(reason, state) do
+    {:stop, reason, state}
+  end
+end
 ```
+
+Add to your supervision tree:
+
+```elixir
+children = [
+  {MyWorker, [some: :args]}
+]
+
+Supervisor.start_link(children, strategy: :one_for_one)
+```
+
+The callbacks `handle_stdout/2`, `handle_stderr/2`, and `handle_exit/2` are all optional.
+You can also implement `handle_call/3`, `handle_cast/2`, and `handle_info/2` from GenServer.
 
 ## FAQ
 

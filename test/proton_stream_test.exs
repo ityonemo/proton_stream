@@ -8,8 +8,6 @@
 defmodule ProtonStreamTest do
   use ProtonStreamTest.Case
 
-  doctest ProtonStream
-
   defp run_muontrap(args) do
     # Directly invoke the muontrap port to reduce the amount of code
     # to debug if something breaks.
@@ -66,122 +64,6 @@ defmodule ProtonStreamTest do
 
     # Now it should be gone
     assert_os_pid_exited(os_pid)
-  end
-
-  # The following tests are copied from System.cmd to help ensure that
-  # ProtonStream.cmd/3 works similarly.
-  test "cmd/2 raises for null bytes" do
-    assert_raise ArgumentError,
-                 ~r"cannot execute ProtonStream.cmd/3 for program with null byte",
-                 fn ->
-                   ProtonStream.cmd("null\0byte", [])
-                 end
-  end
-
-  test "cmd/3 raises with non-binary arguments" do
-    assert_raise ArgumentError, ~r"all arguments for ProtonStream.cmd/3 must be binaries", fn ->
-      ProtonStream.cmd("ls", [~c"/usr"])
-    end
-  end
-
-  test "cmd/2" do
-    assert {"hello\n", 0} = ProtonStream.cmd("echo", ["hello"])
-  end
-
-  test "cmd/3 (with options)" do
-    opts = [
-      into: [],
-      cd: File.cwd!(),
-      env: %{"foo" => "bar", "baz" => nil},
-      arg0: "echo",
-      stderr_to_stdout: true,
-      parallelism: true
-    ]
-
-    assert {["hello\n"], 0} = ProtonStream.cmd("echo", ["hello"], opts)
-  end
-
-  test "cmd/3 that prints a lot w/ default buffer" do
-    opts = [
-      parallelism: true
-    ]
-
-    {output, 0} = ProtonStream.cmd(test_path("print_a_lot.test"), [], opts)
-    split = String.split(output, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789")
-    assert length(split) == 1001
-  end
-
-  test "cmd/3 that prints a lot w/ smaller buffer" do
-    opts = [
-      parallelism: true,
-      stdio_window: 63
-    ]
-
-    {output, 0} = ProtonStream.cmd(test_path("print_a_lot.test"), [], opts)
-    split = String.split(output, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789")
-    assert length(split) == 1001
-  end
-
-  test "cmd/3 with timeout" do
-    opts = [timeout: 250]
-
-    fun = fn ->
-      ProtonStream.cmd(test_path("chatty.test"), [], opts)
-    end
-
-    assert {elapsed, {output, :timeout}} = :timer.tc(fun)
-    elapsed = div(elapsed, 1000)
-
-    assert_in_delta opts[:timeout], elapsed, 50
-    assert byte_size(output) > 0
-  end
-
-  test "cmd/3 with timeout cleans up timers" do
-    opts = [timeout: 100]
-
-    {_, status} = ProtonStream.cmd(test_path("kill_self_with_signal.test"), [], opts)
-
-    refute status == :timeout
-    refute_receive :timeout
-  end
-
-  test "cmd/3 doesn't eat any messages sent to the process" do
-    opts = [timeout: 250]
-
-    message = {:timeout, make_ref()}
-    Process.send_after(self(), message, 10)
-    Process.send_after(self(), :foo, 10)
-
-    assert {_, :timeout} = ProtonStream.cmd(test_path("do_nothing.test"), [], opts)
-
-    assert_receive ^message
-    assert_receive :foo
-  end
-
-  # Test adapted from https://github.com/elixir-lang/elixir/blob/v1.15.0/lib/elixir/test/elixir/system_test.exs#L121
-  @echo "echo-elixir-test"
-  @tag :tmp_dir
-  test "cmd/2 with absolute and relative paths", config do
-    echo = Path.join(config.tmp_dir, @echo)
-    File.mkdir_p!(Path.dirname(echo))
-    File.ln_s!(System.find_executable("echo"), echo)
-
-    File.cd!(Path.dirname(echo), fn ->
-      # There is a bug in OTP where find_executable is finding
-      # entries on the current directory. If this is the case,
-      # we should avoid the assertion below.
-      if !System.find_executable(@echo) do
-        assert :enoent = catch_error(ProtonStream.cmd(@echo, ["hello"]))
-      end
-
-      assert {"hello\n", 0} =
-               ProtonStream.cmd(Path.join(File.cwd!(), @echo), ["hello"], [{:arg0, "echo"}])
-    end)
-  end
-
-  test "signals return an exit code of 128 + signal" do
-    # SIGTERM == 15
-    assert {"", 128 + 15} == ProtonStream.cmd(test_path("kill_self_with_signal.test"), [])
   end
 
   @project_root Path.expand("..", __DIR__)
