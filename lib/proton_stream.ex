@@ -153,9 +153,7 @@ defmodule ProtonStream do
 
   @optional_callbacks handle_stdout: 2,
                       handle_stderr: 2,
-                      handle_exit: 2,
-                      handle_continue: 2,
-                      terminate: 2
+                      handle_exit: 2
 
   # Frame protocol tags (C -> Elixir)
   @frame_tag_stdout 0x01
