@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.8.1
+
+* New features
+  * Add optional `handle_continue/2` and `terminate/2` callbacks for callback module mode
+
 ## v1.8.0
 
 * New features

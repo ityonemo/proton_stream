@@ -109,8 +109,10 @@ defmodule ProtonStream do
 
   ### GenServer Callbacks
 
-  The callback module may also implement `c:GenServer.handle_call/3` and
-  `c:GenServer.handle_cast/2` to handle synchronous and asynchronous requests.
+  The callback module may also implement `c:GenServer.handle_call/3`,
+  `c:GenServer.handle_cast/2`, `c:GenServer.handle_info/2`, `c:handle_continue/2`,
+  and `c:terminate/2` to handle synchronous requests, asynchronous requests,
+  messages, continuations, and cleanup.
 
   ## Configuring cgroups
 
@@ -142,7 +144,18 @@ defmodule ProtonStream do
   @callback handle_exit(reason :: term(), state :: term()) ::
               {:stop, reason :: term(), new_state :: term()}
 
-  @optional_callbacks handle_stdout: 2, handle_stderr: 2, handle_exit: 2
+  @callback handle_continue(continue_arg :: term(), state :: term()) ::
+              {:noreply, new_state :: term()}
+              | {:noreply, new_state :: term(), timeout() | :hibernate | {:continue, term()}}
+              | {:stop, reason :: term(), new_state :: term()}
+
+  @callback terminate(reason :: term(), state :: term()) :: term()
+
+  @optional_callbacks handle_stdout: 2,
+                      handle_stderr: 2,
+                      handle_exit: 2,
+                      handle_continue: 2,
+                      terminate: 2
 
   # Frame protocol tags (C -> Elixir)
   @frame_tag_stdout 0x01
@@ -450,6 +463,22 @@ defmodule ProtonStream do
     end
 
     case module.handle_info(msg, state.state) do
+      {:noreply, new_state} ->
+        {:noreply, %{state | state: new_state}}
+      {:noreply, new_state, timeout_or_continue} ->
+        {:noreply, %{state | state: new_state}, timeout_or_continue}
+      {:stop, reason, new_state} ->
+        {:stop, reason, %{state | state: new_state}}
+    end
+  end
+
+  @impl true
+  def handle_continue(continue_arg, %{owner: module} = state) when is_atom(module) do
+    if !function_exported?(module, :handle_continue, 2) do
+      raise "attempted to continue #{inspect(module)} but no handle_continue/2 clause was provided"
+    end
+
+    case module.handle_continue(continue_arg, state.state) do
       {:noreply, new_state} ->
         {:noreply, %{state | state: new_state}}
       {:noreply, new_state, timeout_or_continue} ->
