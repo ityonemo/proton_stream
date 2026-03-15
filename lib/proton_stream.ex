@@ -55,7 +55,7 @@ defmodule ProtonStream do
 
   The following callbacks must be implemented:
 
-  - `c:init/1` - called when the process starts, returns initial state
+  - `c:GenServer.init/1` - called when the process starts, returns initial state
   - `c:handle_stdout/2` - called when stdout data is received
   - `c:handle_stderr/2` - called when stderr data is received
   - `c:handle_exit/2` - called when the child process exits
@@ -102,7 +102,7 @@ defmodule ProtonStream do
 
   ### Callback Return Values
 
-  - `c:init/1` returns `{:ok, state}` or `{:stop, reason}`
+  - `c:GenServer.init/1` returns `{:ok, state}` or `{:stop, reason}`
   - `c:handle_stdout/2` returns `{:noreply, state}` or `{:stop, reason, state}`
   - `c:handle_stderr/2` returns `{:noreply, state}` or `{:stop, reason, state}`
   - `c:handle_exit/2` returns `{:stop, reason, state}`
@@ -143,13 +143,6 @@ defmodule ProtonStream do
 
   @callback handle_exit(reason :: term(), state :: term()) ::
               {:stop, reason :: term(), new_state :: term()}
-
-  @callback handle_continue(continue_arg :: term(), state :: term()) ::
-              {:noreply, new_state :: term()}
-              | {:noreply, new_state :: term(), timeout() | :hibernate | {:continue, term()}}
-              | {:stop, reason :: term(), new_state :: term()}
-
-  @callback terminate(reason :: term(), state :: term()) :: term()
 
   @optional_callbacks handle_stdout: 2,
                       handle_stderr: 2,
