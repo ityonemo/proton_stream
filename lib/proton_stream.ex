@@ -110,8 +110,8 @@ defmodule ProtonStream do
   ### GenServer Callbacks
 
   The callback module may also implement `c:GenServer.handle_call/3`,
-  `c:GenServer.handle_cast/2`, `c:GenServer.handle_info/2`, `c:handle_continue/2`,
-  and `c:terminate/2` to handle synchronous requests, asynchronous requests,
+  `c:GenServer.handle_cast/2`, `c:GenServer.handle_info/2`, `c:GenServer.handle_continue/2`,
+  and `c:GenServer.terminate/2` to handle synchronous requests, asynchronous requests,
   messages, continuations, and cleanup.
 
   ## Configuring cgroups

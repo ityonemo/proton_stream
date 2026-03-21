@@ -134,7 +134,7 @@ Supervisor.start_link(children, strategy: :one_for_one)
 ```
 
 The callbacks `handle_stdout/2`, `handle_stderr/2`, and `handle_exit/2` are all optional.
-You can also implement `handle_call/3`, `handle_cast/2`, and `handle_info/2` from GenServer.
+You can also implement `GenServer.handle_call/3`, `GenServer.handle_cast/2`, and `GenServer.handle_info/2`.
 
 ## FAQ
 
