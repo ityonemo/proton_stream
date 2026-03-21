@@ -65,6 +65,13 @@ defmodule ProtonStream.CallbackTest do
       assert_receive {:stdout, path}, 1000
       assert String.trim(path) == "/tmp"
     end
+
+    test "supports :name option for process registration" do
+      name = :"test_worker_#{System.unique_integer([:positive])}"
+      {:ok, pid} = TestWorker.start_link({"echo", ["hello"], self(), [name: name]})
+      assert_receive {:worker_started, ^pid}, 1000
+      assert Process.whereis(name) == pid
+    end
   end
 
   describe "handle_stdout/2 callback" do
@@ -109,7 +116,9 @@ defmodule ProtonStream.CallbackTest do
     end
 
     test "is called with signal for signaled process" do
-      {:ok, _pid} = TestWorker.start_link({test_path("kill_self_with_signal.test"), [], self(), []})
+      {:ok, _pid} =
+        TestWorker.start_link({test_path("kill_self_with_signal.test"), [], self(), []})
+
       assert_receive {:worker_started, _}, 1000
       assert_receive {:exit, {:signal, 15}}, 2000
     end

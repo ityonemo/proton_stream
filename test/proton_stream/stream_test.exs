@@ -18,7 +18,9 @@ defmodule ProtonStream.StreamTest do
     end
 
     test "accepts env option" do
-      {:ok, ps} = ProtonStream.open("printenv", ["MY_TEST_VAR"], env: [{"MY_TEST_VAR", "test_value"}])
+      {:ok, ps} =
+        ProtonStream.open("printenv", ["MY_TEST_VAR"], env: [{"MY_TEST_VAR", "test_value"}])
+
       assert_receive {^ps, {:data, "test_value\n"}}, 1000
     end
   end
@@ -97,14 +99,15 @@ defmodule ProtonStream.StreamTest do
       {:ok, ps} = ProtonStream.open(test_path("chatty.test"), [])
       test_pid = self()
 
-      new_owner = spawn(fn ->
-        receive do
-          {sender, {:data, _}} ->
-            send(test_pid, {:new_owner_got_data, sender})
-        after
-          2000 -> send(test_pid, :timeout)
-        end
-      end)
+      new_owner =
+        spawn(fn ->
+          receive do
+            {sender, {:data, _}} ->
+              send(test_pid, {:new_owner_got_data, sender})
+          after
+            2000 -> send(test_pid, :timeout)
+          end
+        end)
 
       send(ps, {self(), {:connect, new_owner}})
       assert_receive {^ps, :connected}, 1000
@@ -137,12 +140,13 @@ defmodule ProtonStream.StreamTest do
     test "kills child when owner crashes" do
       parent = self()
 
-      pid = spawn(fn ->
-        {:ok, ps} = ProtonStream.open(test_path("do_nothing.test"), [])
-        os_pid = ProtonStream.os_pid(ps)
-        send(parent, {:os_pid, os_pid})
-        Process.sleep(:infinity)
-      end)
+      pid =
+        spawn(fn ->
+          {:ok, ps} = ProtonStream.open(test_path("do_nothing.test"), [])
+          os_pid = ProtonStream.os_pid(ps)
+          send(parent, {:os_pid, os_pid})
+          Process.sleep(:infinity)
+        end)
 
       assert_receive {:os_pid, os_pid}, 1000
       assert os_pid_around?(os_pid)

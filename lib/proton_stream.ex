@@ -206,7 +206,13 @@ defmodule ProtonStream do
 
   @spec start_link(module, binary(), [binary()], term(), keyword()) :: GenServer.on_start()
   def start_link(module, command, args \\ [], init_arg \\ [], opts \\ []) do
-    GenServer.start_link(__MODULE__, {command, args, opts, module, init_arg})
+    {genserver_opts, proton_opts} = Keyword.split(opts, [:name])
+
+    GenServer.start_link(
+      __MODULE__,
+      {command, args, proton_opts, module, init_arg},
+      genserver_opts
+    )
   end
 
   @doc """
@@ -281,8 +287,10 @@ defmodule ProtonStream do
     case module.init(init_arg) do
       {:ok, callback_state} ->
         {:ok, new(muontrap_args, port_options, command, args, options, module, callback_state)}
+
       {:stop, reason} ->
         {:stop, reason}
+
       other ->
         {:stop, {:bad_return_value, other}}
     end
@@ -296,16 +304,15 @@ defmodule ProtonStream do
       )
 
     %__MODULE__{
-          port: port,
-          owner: owner,
-          command: command,
-          args: args,
-          buffer: <<>>,
-          cgroup_path: options[:cgroup_path],
-          state: state
+      port: port,
+      owner: owner,
+      command: command,
+      args: args,
+      buffer: <<>>,
+      cgroup_path: options[:cgroup_path],
+      state: state
     }
   end
-
 
   @impl true
   def handle_call(:"$os_pid", _from, state) do
@@ -326,14 +333,19 @@ defmodule ProtonStream do
     case module.handle_call(msg, from, state.state) do
       {:reply, reply, new_state} ->
         {:reply, reply, %{state | state: new_state}}
+
       {:reply, reply, new_state, timeout_or_continue} ->
         {:reply, reply, %{state | state: new_state}, timeout_or_continue}
+
       {:noreply, new_state} ->
         {:noreply, %{state | state: new_state}}
+
       {:noreply, new_state, timeout_or_continue} ->
         {:noreply, %{state | state: new_state}, timeout_or_continue}
+
       {:stop, reason, reply, new_state} ->
         {:stop, reason, reply, %{state | state: new_state}}
+
       {:stop, reason, new_state} ->
         {:stop, reason, %{state | state: new_state}}
     end
@@ -348,15 +360,18 @@ defmodule ProtonStream do
     case module.handle_cast(msg, state.state) do
       {:noreply, new_state} ->
         {:noreply, %{state | state: new_state}}
+
       {:noreply, new_state, timeout_or_continue} ->
         {:noreply, %{state | state: new_state}, timeout_or_continue}
+
       {:stop, reason, new_state} ->
         {:stop, reason, %{state | state: new_state}}
     end
   end
 
   @impl true
-  def handle_info({port, {:data, data}}, %{port: port, owner: owner} = state) when is_pid(owner) do
+  def handle_info({port, {:data, data}}, %{port: port, owner: owner} = state)
+      when is_pid(owner) do
     {frames, buffer} = parse_frames(state.buffer <> data)
 
     Enum.each(frames, fn
@@ -373,7 +388,8 @@ defmodule ProtonStream do
     {:noreply, %{state | buffer: buffer}}
   end
 
-  def handle_info({port, {:data, data}}, %{port: port, owner: module} = state) when is_atom(module) do
+  def handle_info({port, {:data, data}}, %{port: port, owner: module} = state)
+      when is_atom(module) do
     {frames, buffer} = parse_frames(state.buffer <> data)
 
     result =
@@ -428,8 +444,12 @@ defmodule ProtonStream do
   end
 
   # Ignore messages from non-owner (message-based mode only)
-  def handle_info({_from, {:command, _}}, %{owner: owner} = state) when is_pid(owner), do: {:noreply, state}
-  def handle_info({_from, :close}, %{owner: owner} = state) when is_pid(owner), do: {:noreply, state}
+  def handle_info({_from, {:command, _}}, %{owner: owner} = state) when is_pid(owner),
+    do: {:noreply, state}
+
+  def handle_info({_from, :close}, %{owner: owner} = state) when is_pid(owner),
+    do: {:noreply, state}
+
   def handle_info({_from, {:connect, _}}, state), do: {:noreply, state}
 
   # Handle linked process exit
@@ -456,8 +476,10 @@ defmodule ProtonStream do
     case module.handle_info(msg, state.state) do
       {:noreply, new_state} ->
         {:noreply, %{state | state: new_state}}
+
       {:noreply, new_state, timeout_or_continue} ->
         {:noreply, %{state | state: new_state}, timeout_or_continue}
+
       {:stop, reason, new_state} ->
         {:stop, reason, %{state | state: new_state}}
     end
@@ -472,8 +494,10 @@ defmodule ProtonStream do
     case module.handle_continue(continue_arg, state.state) do
       {:noreply, new_state} ->
         {:noreply, %{state | state: new_state}}
+
       {:noreply, new_state, timeout_or_continue} ->
         {:noreply, %{state | state: new_state}, timeout_or_continue}
+
       {:stop, reason, new_state} ->
         {:stop, reason, %{state | state: new_state}}
     end
@@ -484,6 +508,7 @@ defmodule ProtonStream do
     if function_exported?(module, :terminate, 2) do
       module.terminate(reason, state.state)
     end
+
     :ok
   end
 
@@ -616,8 +641,10 @@ defmodule ProtonStream do
       case module.handle_stdout(payload, state.state) do
         {:noreply, new_state} ->
           {:noreply, %{state | state: new_state}}
+
         {:noreply, new_state, extra} ->
           {:noreply, %{state | state: new_state}, extra}
+
         {:stop, reason, new_state} ->
           {:stop, reason, %{state | state: new_state}}
       end
@@ -631,8 +658,10 @@ defmodule ProtonStream do
       case module.handle_stderr(payload, state.state) do
         {:noreply, new_state} ->
           {:noreply, %{state | state: new_state}}
+
         {:noreply, new_state, extra} ->
           {:noreply, %{state | state: new_state}, extra}
+
         {:stop, reason, new_state} ->
           {:stop, reason, %{state | state: new_state}}
       end
@@ -643,6 +672,7 @@ defmodule ProtonStream do
 
   defp handle_callback_frame({:exit_status, status}, module, state) do
     reason = exit_reason(status)
+
     if function_exported?(module, :handle_exit, 2) do
       case module.handle_exit(reason, state.state) do
         {:stop, stop_reason, new_state} ->

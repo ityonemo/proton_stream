@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.8.2
+
+* New features
+  * Support `:name` option in `start_link/5` for process registration
+
 ## v1.8.1
 
 * New features
