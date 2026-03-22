@@ -374,16 +374,22 @@ defmodule ProtonStream do
       when is_pid(owner) do
     {frames, buffer} = parse_frames(state.buffer <> data)
 
-    Enum.each(frames, fn
-      {:stdout, payload} ->
-        send(owner, {self(), {:data, payload}})
+    stdout_bytes =
+      Enum.sum_by(frames, fn
+        {:stdout, payload} ->
+          send(owner, {self(), {:data, payload}})
+          byte_size(payload)
 
-      {:stderr, payload} ->
-        send(owner, {self(), {:error, payload}})
+        {:stderr, payload} ->
+          send(owner, {self(), {:error, payload}})
+          0
 
-      {:exit_status, status} ->
-        handle_exit_status(status, state)
-    end)
+        {:exit_status, status} ->
+          handle_exit_status(status, state)
+          0
+      end)
+
+    if stdout_bytes > 0, do: send_ack(port, stdout_bytes)
 
     {:noreply, %{state | buffer: buffer}}
   end
@@ -391,6 +397,11 @@ defmodule ProtonStream do
   def handle_info({port, {:data, data}}, %{port: port, owner: module} = state)
       when is_atom(module) do
     {frames, buffer} = parse_frames(state.buffer <> data)
+
+    stdout_bytes = Enum.sum_by(frames, fn
+        {:stdout, payload} -> byte_size(payload)
+        _ -> 0
+      end)
 
     result =
       Enum.reduce_while(frames, {:noreply, %{state | buffer: buffer}}, fn frame, {_, acc_state} ->
@@ -400,6 +411,8 @@ defmodule ProtonStream do
           {:stop, reason, new_state} -> {:halt, {:stop, reason, new_state}}
         end
       end)
+
+    if stdout_bytes > 0, do: send_ack(port, stdout_bytes)
 
     result
   end

@@ -1,7 +1,7 @@
 defmodule ProtonStream.MixProject do
   use Mix.Project
 
-  @version "1.8.2"
+  @version "1.8.3"
   @source_url "https://github.com/ityonemo/proton_stream"
 
   def project do

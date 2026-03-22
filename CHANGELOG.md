@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.8.3
+
+* Bug fixes
+  * Add flow control acknowledgments for stdout bytes in both message-based and callback module modes
+
 ## v1.8.2
 
 * New features
